@@ -1,44 +1,54 @@
 import requests
-from MysqlConnector import MysqlConnector
-import time
-from AiBot import AiBot
-import os
-from dotenv import load_dotenv
-from EmailSender import EmailSender
+import logging
+from config import Config
 
-load_dotenv(override=True)
+logger = logging.getLogger(__name__)
 
 class NewsGetter:
-    def __init__(self,aiNewsCoverageDays):
-        self.subject = ""
-        self.contentText = ""
-        self.payload = os.getenv('newsApiKey')
-        self.url = "https://v3.alapi.cn/api/zaobao"
+    def __init__(self):
+        self.url = Config.NEWS_API_URL
+        self.payload = Config.NEWS_API_KEY
         self.headers = {'Content-Type': "application/x-www-form-urlencoded"}
-        self.aiNewsCoverageDays = aiNewsCoverageDays
-    
-    def sendNews(self, users):
-        
-        aiBot = AiBot()
-        mysqlConnector = MysqlConnector()
-        today=time.strftime('%Y-%m-%d', time.localtime())
-        hour=int(time.strftime('%H', time.localtime()))
-        emailSender = EmailSender()
 
-        if not mysqlConnector.haveNews(today) and hour > 9 :
-            self.subject="每日60秒新闻 "+today
-            response = requests.request("POST", self.url, data="token="+self.payload, headers=self.headers)
+    def get_daily_news(self):
+        """
+        Fetches daily news from the API.
+        Returns a formatted string of news items, or None if failed.
+        """
+        try:
+            logger.info("Fetching news from API...")
+            response = requests.post(self.url, data={'token': self.payload}, headers=self.headers, timeout=10)
+            response.raise_for_status()
             
-            tmp = response.json()
+            data = response.json()
+            if data.get('code') != 200:
+                logger.error(f"API returned error: {data.get('msg', 'Unknown error')}")
+                return None
+            
+            news_items = data.get('data', {}).get('news', [])
+            if not news_items:
+                logger.warning("No news items found in API response.")
+                return None
 
-            for i in tmp['data']['news']:
-                self.contentText = self.contentText+i[i.find("、")+1:]+'\n\n'
-                
-            nearestNews = mysqlConnector.getNearestNews(self.aiNewsCoverageDays-1)
-            aiReply=aiBot.chat(today+":"+self.contentText+"\n"+nearestNews)
+            # Format news: Remove the prefix before the first '、' (like "1、")
+            formatted_news = []
+            for item in news_items:
+                # Find the first occurrence of "、"
+                separator_index = item.find("、")
+                if separator_index != -1:
+                    clean_item = item[separator_index + 1:].strip()
+                else:
+                    clean_item = item.strip()
+                formatted_news.append(clean_item)
             
-            mysqlConnector.insert(self.contentText,aiReply)
-            
-            emailSender.sendEmail(users, self.subject, self.contentText+"\nai新闻总结:\n\n"+aiReply)
-            
-        mysqlConnector.close()
+            return "\n\n".join(formatted_news)
+
+        except requests.RequestException as e:
+            logger.error(f"Network error while fetching news: {e}")
+            return None
+        except ValueError as e:
+            logger.error(f"Error parsing JSON response: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in NewsGetter: {e}")
+            return None

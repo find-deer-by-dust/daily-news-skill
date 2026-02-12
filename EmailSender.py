@@ -1,17 +1,27 @@
 import zmail
-import os
-from dotenv import load_dotenv
+import logging
+from config import Config
 
-load_dotenv(override=True)
+logger = logging.getLogger(__name__)
 
 class EmailSender:
     
     def __init__(self):
-        self.emailKey = os.getenv('emailKey')
-        self.server = zmail.server(os.getenv('email'), self.emailKey)
+        self.server = zmail.server(Config.EMAIL_ADDRESS, Config.EMAIL_PASSWORD)
         
     def sendEmail(self, users, subject, content_text):
-        print(users)
+        if not users:
+            logger.warning("No users to send email to.")
+            return
+
+        if not isinstance(users, list):
+            users = [users]
+
+        logger.info(f"Sending email '{subject}' to {len(users)} recipients.")
+        
         for user in users:
-            self.server.send_mail(user, {'subject': subject,'content_text': content_text})
-            print("have sent email to " + user)
+            try:
+                self.server.send_mail(user, {'subject': subject, 'content_text': content_text})
+                logger.info(f"Email sent successfully to {user}")
+            except Exception as e:
+                logger.error(f"Failed to send email to {user}: {e}")

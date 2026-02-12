@@ -1,14 +1,16 @@
-from NewsGetter import NewsGetter
-import os
-import json
-from dotenv import load_dotenv
+from NewsService import NewsService
+import logging
+from config import Config # Ensure config is loaded and logging configured
 
-load_dotenv(override=True)
+logger = logging.getLogger(__name__)
+
 def main():
-    users =  json.loads(os.getenv('users'))
-    newsGetter = NewsGetter(7)
-    newsGetter.sendNews(users)
-    
+    logger.info("Starting EmailBot application...")
+    try:
+        service = NewsService(ai_news_coverage_days=7)
+        service.run_daily_task()
+    except Exception as e:
+        logger.critical(f"Unhandled exception in main: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main()

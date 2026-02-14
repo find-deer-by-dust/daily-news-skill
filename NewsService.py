@@ -23,9 +23,9 @@ class NewsService:
         today_date = datetime.date.today()
         current_hour = datetime.datetime.now().hour
         
-        # Check if it's too early (before 8 AM)
-        if current_hour <= 8:
-            logger.info("It is too early to fetch news (before 8 AM). Skipping.")
+        # Check if it's too early (before 9 AM)
+        if current_hour <= 9:
+            logger.info("It is too early to fetch news (before 9 AM). Skipping.")
             return
 
         with MysqlConnector() as db:

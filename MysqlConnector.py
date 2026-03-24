@@ -22,7 +22,7 @@ class MysqlConnector:
 
     def connect(self) -> None:
         try:
-            # pymysql doesn't always have perfect strict typing, so we use Any for DictCursor fallback
+            # pymysql 并不总是具备完美的严格类型，因此我们使用 Any 作为 DictCursor 的后备类型
             cursor_cls: Any = pymysql.cursors.DictCursor
             self.connection = pymysql.connect(
                 host=Config.DB_HOST or 'nas',
@@ -32,9 +32,9 @@ class MysqlConnector:
                 cursorclass=cursor_cls
             )
             self.cursor = self.connection.cursor()
-            logger.info("Connected to database.")
+            logger.info("已连接到数据库。")
         except pymysql.MySQLError as e:
-            logger.error(f"Error connecting to database: {e}")
+            logger.error(f"连接数据库时出错: {e}")
             raise
 
     def dir2dailyNews(self, data: Optional[Dict[str, Any]]) -> Optional[DailyNews]:
@@ -49,16 +49,16 @@ class MysqlConnector:
 
     def insert(self, date: datetime.date, news: str, aiReply: str) -> None:
         if not self.connection or not self.cursor:
-            raise RuntimeError("Database connection is not initialized.")
+            raise RuntimeError("数据库连接未初始化。")
 
         sql = "INSERT INTO dailyNews(date, news, aiReply) VALUES (%s, %s, %s);"
         val = (date, news, aiReply)
         try:
             self.cursor.execute(sql, val)
             self.connection.commit()
-            logger.info("Inserted news into database.")
+            logger.info("已将新闻插入数据库。")
         except pymysql.MySQLError as e:
-            logger.error(f"Error inserting news: {e}")
+            logger.error(f"插入新闻时出错: {e}")
             self.connection.rollback()
             raise
 
@@ -67,17 +67,17 @@ class MysqlConnector:
             return None
 
         sql = "select * from dailyNews where date = %s;"
-        val = (date,) # Tuple
+        val = (date,) # 元组
         try:
             self.cursor.execute(sql, val)
-            # Fetchone returns dict or tuple based on cursor, we set DictCursor so it's Dict
+            # 根据游标类型，fetchone 会返回字典或元组，我们设置了 DictCursor 所以它返回字典
             result = self.cursor.fetchone()
-            # We must assert it's a dict for strict mode, or cast it
+            # 在严格模式下，我们必须断言它是一个字典，或者转换它
             if result and isinstance(result, dict):
                 return self.dir2dailyNews(result)
             return None
         except pymysql.MySQLError as e:
-            logger.error(f"Error selecting by date: {e}")
+            logger.error(f"按日期查询时出错: {e}")
             return None
 
     def close(self) -> None:
@@ -85,7 +85,7 @@ class MysqlConnector:
             self.cursor.close()
         if self.connection:
             self.connection.close()
-            logger.info("Database connection closed.")
+            logger.info("数据库连接已关闭。")
 
     def haveNews(self, date: datetime.date) -> bool:
         result = self.selectByDate(date)
@@ -110,5 +110,5 @@ class MysqlConnector:
             )
             return newsText
         except pymysql.MySQLError as e:
-            logger.error(f"Error getting nearest news: {e}")
+            logger.error(f"获取最近新闻时出错: {e}")
             return ""

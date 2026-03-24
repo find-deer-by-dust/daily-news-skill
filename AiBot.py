@@ -10,7 +10,7 @@ class AiBot:
             api_key=Config.AI_API_KEY,
             base_url=Config.AI_BASE_URL,
         )
-        self.systemContent = "你是一个专业新闻点评人,用通俗易懂的语言,减少专业性描述,给你最近几日新闻，你做出总体点评,不需要对每一条新闻点评,用纯文本的方式回答我,不用markdown,但是同样需要做好分段"
+        self.systemContent = "你是一个专业新闻点评人,给你最近几日新闻,你做出总体点评,不需要对每一条新闻点评,用通俗易懂的语言,减少专业性描述,对未来方向做出预测,用纯文本的方式回答我,不用markdown,但是同样需要做好分段"
         
     def chat(self, content):
         logger.info("Sending request to AI model...")

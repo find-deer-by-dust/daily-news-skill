@@ -24,7 +24,7 @@ class NewsService:
         current_hour = datetime.datetime.now().hour
         
         # Check if it's too early (before 9 AM)
-        if current_hour <= 9:
+        if current_hour < 9:
             logger.info("It is too early to fetch news (before 9 AM). Skipping.")
             return
 

@@ -2,6 +2,7 @@ import requests
 import logging
 import re
 import time
+import datetime
 from typing import Optional
 from config import Config
 
@@ -13,7 +14,7 @@ class NewsGetter:
         self.payload = Config.NEWS_API_KEY
         self.headers = {'Content-Type': "application/x-www-form-urlencoded"}
 
-    def get_daily_news(self, max_retries: int = 3) -> Optional[str]:
+    def get_daily_news(self, max_retries: int = 10) -> Optional[str]:
         """
         从 API 获取每日新闻，并带有重试机制。
         返回格式化后的新闻字符串，如果失败则返回 None。
@@ -29,7 +30,15 @@ class NewsGetter:
                     logger.error(f"API 返回错误: {data.get('msg', '未知错误')}")
                     return None
 
-                news_items = data.get('data', {}).get('news', [])
+                news_data = data.get('data', {})
+                news_date = news_data.get('date')
+                today_str = datetime.date.today().strftime('%Y-%m-%d')
+
+                if news_date and news_date != today_str:
+                    logger.warning(f"获取到的新闻日期 ({news_date}) 不是今天 ({today_str})")
+                    raise Exception(f"新闻尚未更新，当前日期: {news_date}")
+
+                news_items = news_data.get('news', [])
                 if not news_items:
                     logger.warning("API 响应中未找到新闻项。")
                     return None
@@ -51,7 +60,7 @@ class NewsGetter:
                 logger.error(f"NewsGetter 中发生意外错误: {e}")
 
             if attempt < max_retries:
-                sleep_time = 2 ** attempt  # 指数退避：2s, 4s, 8s
+                sleep_time = 2 ** attempt  # 指数退避：2s, 4s, 8s...
                 logger.info(f"将在 {sleep_time} 秒后重试...")
                 time.sleep(sleep_time)
 

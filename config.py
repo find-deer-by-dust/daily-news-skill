@@ -57,9 +57,10 @@ class Config:
         if missing:
             raise ValueError(f"缺少必需的环境变量: {', '.join(missing)}")
 
-# 在导入或启动时进行验证
-try:
-    Config.validate()
-except ValueError as e:
-    logging.error(e)
-    sys.exit(1)
+def validate_config_or_exit() -> None:
+    """供入口脚本调用，验证失败时退出进程，避免在库导入时意外退出。"""
+    try:
+        Config.validate()
+    except ValueError as e:
+        logging.error(e)
+        sys.exit(1)

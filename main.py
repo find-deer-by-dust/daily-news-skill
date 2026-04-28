@@ -1,10 +1,11 @@
 from NewsService import NewsService
 import logging
-from config import Config # 确保已加载配置和日志
+from config import validate_config_or_exit
 
 logger = logging.getLogger(__name__)
 
 def main():
+    validate_config_or_exit()
     logger.info("正在启动 EmailBot 应用程序...")
     try:
         service = NewsService(ai_news_coverage_days=7)

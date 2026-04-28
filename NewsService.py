@@ -15,6 +15,20 @@ class NewsService:
         self.ai_bot = AiBot()
         self.email_sender = EmailSender()
 
+    def _build_prompt(self, today_date, news_content: str, nearest_news: str) -> str:
+        """构建结构化的 AI 点评提示词。"""
+        return (
+            f"请对以下新闻内容进行专业点评。\n\n"
+            f"【今日日期】\n{today_date}\n\n"
+            f"【今日新闻】\n{news_content}\n\n"
+            f"【历史参考（前几日新闻）】\n{nearest_news if nearest_news else '无历史数据'}\n\n"
+            f"【点评要求】\n"
+            f"1. 对今日新闻做总体概述和点评，不需要逐条分析\n"
+            f"2. 用通俗易懂的语言，减少专业性描述\n"
+            f"3. 结合历史新闻，对未来方向做出预测\n"
+            f"4. 纯文本输出，做好分段，不用 markdown 格式"
+        )
+
     def run_daily_task(self) -> None:
         """
         主调度方法。
@@ -45,7 +59,7 @@ class NewsService:
             nearest_news = db.getNearestNews(self.ai_news_coverage_days - 1)
 
             # 3. 获取 AI 总结点评
-            prompt = f"{today_date}:\n{news_content}\n\n历史参考:\n{nearest_news}"
+            prompt = self._build_prompt(today_date, news_content, nearest_news)
             ai_reply = self.ai_bot.chat(prompt)
 
             # 4. 保存至数据库
@@ -54,9 +68,6 @@ class NewsService:
             except Exception as e:
                 logger.error(f"保存新闻至数据库失败: {e}")
                 logger.warning("数据库插入失败，但我们将继续发送邮件。")
-                # 虽然存入数据库失败，但为了保证读者能按时收到新闻，我们继续执行发送邮件的流程。
-                # 注意：如果这是一个被频繁轮询的脚本，数据库写入失败可能会导致下一次轮询时继续触发该任务。
-                # 但考虑到通常这只是一个通过 crontab 每天执行一次的脚本，确保交付比静默失败更好。
 
             # 5. 发送邮件
             subject = f"每日60秒早报 - {today_date}"

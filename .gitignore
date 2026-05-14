@@ -1,3 +1,9 @@
+# Go build artifacts
+emailBot
+*.exe
+*.test
+*.out
+
 # Build and Release Folders
 bin-debug/
 bin-release/
@@ -15,13 +21,10 @@ bin-release/
 *.apk
 *.pyc
 *.log
-*.pyc
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
-
-
+# Environment
 .env
+
+# Misc
 1.*
 test.*

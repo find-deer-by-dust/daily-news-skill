@@ -9,6 +9,9 @@ from typing import List, Optional
 # 加载环境变量
 load_dotenv(override=True)
 
+
+
+
 # 日志配置
 logging.basicConfig(
     level=logging.INFO,
@@ -20,11 +23,8 @@ logging.basicConfig(
 )
 
 class Config:
-    # 数据库配置
-    DB_HOST: Optional[str] = os.getenv('DB_HOST', 'nas')
-    DB_USER: Optional[str] = os.getenv('DB_USER', 'root')
-    DB_PASSWORD: Optional[str] = os.getenv('DB_PASSWORD')
-    DB_NAME: Optional[str] = os.getenv('DB_NAME')
+    # SQLite 数据库配置
+    SQLITE_DB_PATH: str = os.getenv('SQLITE_DB_PATH') or os.getenv('DB_PATH') or 'emailbot.db'
 
     # AI 配置
     AI_API_KEY: Optional[str] = os.getenv('AI_API_KEY')
@@ -47,8 +47,6 @@ class Config:
     def validate(cls) -> None:
         """简单的验证，确保关键的环境变量存在。"""
         missing: List[str] = []
-        if not cls.DB_PASSWORD: missing.append("DB_PASSWORD")
-        if not cls.DB_NAME: missing.append("DB_NAME")
         if not cls.AI_API_KEY: missing.append("AI_API_KEY")
         if not cls.EMAIL_ADDRESS: missing.append("EMAIL_ADDRESS")
         if not cls.EMAIL_PASSWORD: missing.append("EMAIL_PASSWORD")

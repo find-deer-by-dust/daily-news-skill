@@ -25,6 +25,11 @@ bin-release/
 # Environment
 .env
 
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
 # Misc
 1.*
 test.*

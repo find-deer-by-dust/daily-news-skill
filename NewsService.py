@@ -1,6 +1,6 @@
 import logging
 import datetime
-from MysqlConnector import MysqlConnector
+from SqliteConnector import SqliteConnector
 from NewsGetter import NewsGetter
 from AiBot import AiBot
 from EmailSender import EmailSender
@@ -42,7 +42,7 @@ class NewsService:
             logger.info("获取新闻的时间太早（早于上午 9 点）。跳过执行。")
             return
 
-        with MysqlConnector() as db:
+        with SqliteConnector() as db:
             if db.haveNews(today_date):
                 logger.info(f"{today_date} 的新闻已经存在。跳过执行。")
                 return

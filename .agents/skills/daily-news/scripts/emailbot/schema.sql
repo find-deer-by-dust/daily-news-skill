@@ -2,7 +2,8 @@ CREATE TABLE IF NOT EXISTS reports (
     date TEXT PRIMARY KEY, news TEXT NOT NULL DEFAULT '',
     report TEXT NOT NULL DEFAULT '', research TEXT NOT NULL DEFAULT '[]',
     news_metadata TEXT NOT NULL DEFAULT '{}',
-    origin TEXT NOT NULL DEFAULT 'local', updated_at TEXT NOT NULL
+    origin TEXT NOT NULL DEFAULT 'local',
+    report_origin TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deliveries (
     date TEXT NOT NULL REFERENCES reports(date), recipient TEXT NOT NULL,

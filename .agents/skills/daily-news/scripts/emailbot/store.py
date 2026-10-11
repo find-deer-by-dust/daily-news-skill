@@ -47,6 +47,12 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute('PRAGMA foreign_keys=ON')
         self.conn.executescript(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
+        columns = {row['name'] for row in self.conn.execute('PRAGMA table_info(reports)')}
+        if 'report_origin' not in columns:
+            with self.conn:
+                self.conn.execute('BEGIN')
+                self.conn.execute("ALTER TABLE reports ADD COLUMN report_origin TEXT NOT NULL DEFAULT ''")
+                self.conn.execute("UPDATE reports SET report_origin=origin WHERE report!=''")
         legacy = self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='dailyNews'").fetchone()
         if legacy and not self.conn.execute("SELECT 1 FROM imports WHERE source='local-legacy'").fetchone():
             self._import_rows(self.conn.execute('SELECT date,news,aiReply FROM dailyNews ORDER BY id'),
@@ -68,8 +74,11 @@ class Store:
 
     def save_report(self, day, text, sources=None):
         with self.conn:
-            self.conn.execute("UPDATE reports SET report=?,origin='local',updated_at=? WHERE date=?",
-                              (text, stamp(), day))
+            # Keep imported provenance for delivery; track local edits separately.
+            self.conn.execute('''UPDATE reports SET
+                research=CASE WHEN report!=? THEN '[]' ELSE research END,
+                report=?,report_origin='local',updated_at=? WHERE date=?''',
+                (text, text, stamp(), day))
             if sources is not None:
                 self.conn.execute('UPDATE reports SET research=? WHERE date=?',
                                   (json.dumps(sources, ensure_ascii=False), day))
@@ -122,14 +131,17 @@ class Store:
             for day, record in grouped.items():
                 current = self.get(day)
                 # Preserve reports generated or delivered by this project.
-                if current and (current['origin'] == 'local' or self.has_delivery(day)):
+                if current and (current['origin'] == 'local' or
+                                current['report_origin'] == 'local' or self.has_delivery(day)):
                     continue
-                self.conn.execute('''INSERT INTO reports(date,news,report,origin,updated_at)
-                    VALUES (?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET
+                self.conn.execute('''INSERT INTO reports(date,news,report,origin,report_origin,updated_at)
+                    VALUES (?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET
                     news=CASE WHEN excluded.news!='' THEN excluded.news ELSE reports.news END,
                     report=CASE WHEN excluded.report!='' THEN excluded.report ELSE reports.report END,
+                    report_origin=CASE WHEN excluded.report!='' THEN excluded.report_origin ELSE reports.report_origin END,
                     origin=excluded.origin,updated_at=excluded.updated_at''',
-                    (day, record['news'], record['report'], source, stamp()))
+                    (day, record['news'], record['report'], source,
+                     source if record['report'] else '', stamp()))
                 count += 1
             self.conn.execute('INSERT OR REPLACE INTO imports VALUES (?,?)', (source, stamp()))
         return count

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from contextlib import closing
 from datetime import datetime
 import json
 from pathlib import Path
@@ -103,6 +104,28 @@ class WorkflowTests(unittest.TestCase):
             save_report(self.settings,self.day,'   ')
         self.assertEqual(self.store.get(self.day)['report'],'已保存报告')
 
+    def test_rewriting_report_without_sources_clears_previous_sources(self):
+        sources={'sources':[{'url':'https://example.com/old','claim':'旧报告事实'}]}
+        save_report(self.settings,self.day,'旧报告',sources)
+        result=save_report(self.settings,self.day,'新报告')
+        self.assertEqual(json.loads(self.store.get(self.day)['research']),[])
+        source_file=Path(result['path']).with_suffix('.sources.json')
+        self.assertEqual(json.loads(source_file.read_text(encoding='utf-8')),[])
+        send_report(self.settings,self.day,dry_run=True)
+        self.assertEqual(json.loads(source_file.read_text(encoding='utf-8')),[])
+
+    def test_saving_unchanged_report_without_sources_preserves_sources(self):
+        sources={'sources':[{'url':'https://example.com/article','claim':'报告事实'}]}
+        save_report(self.settings,self.day,'相同报告',sources)
+        for delivered in (False,True):
+            with self.subTest(delivered=delivered):
+                if delivered:
+                    self.store.begin_delivery(self.day,'one@example.com','<id@example.com>')
+                result=save_report(self.settings,self.day,'相同报告')
+                self.assertEqual(json.loads(self.store.get(self.day)['research']),sources)
+                source_file=Path(result['path']).with_suffix('.sources.json')
+                self.assertEqual(json.loads(source_file.read_text(encoding='utf-8')),sources)
+
     def test_save_requires_original_news(self):
         with self.assertRaisesRegex(ValueError,'先 fetch'):
             save_report(self.settings,'1999-01-01','报告')
@@ -124,6 +147,87 @@ class WorkflowTests(unittest.TestCase):
         self.store.conn.execute("UPDATE reports SET origin='hermes' WHERE date=?",(self.day,)); self.store.conn.commit()
         with patch('emailbot.delivery.smtplib.SMTP') as smtp:
             self.assertEqual(send_report(self.settings,self.day)['status'],'imported')
+        smtp.assert_not_called()
+
+    def test_rewritten_imported_report_requires_explicit_resend(self):
+        legacy=self.root/'legacy.db'
+        with closing(sqlite3.connect(legacy)) as c, c:
+            c.execute('CREATE TABLE dailyNews(id,date,news,aiReply)')
+            c.executemany('INSERT INTO dailyNews VALUES (?,?,?,?)',[
+                (1,'2000-01-01','旧新闻','旧报告'),(2,'2000-01-02','旧新闻','')])
+        self.store.import_history(legacy)
+        sources={'sources':[{'url':'https://example.com/article','claim':'补写事实'}]}
+        for day in ('2000-01-01','2000-01-02'):
+            with self.subTest(day=day):
+                save_report(self.settings,day,'补写报告',sources)
+                self.assertEqual(self.store.get(day)['origin'],str(legacy.resolve()))
+                with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+                    result=send_report(self.settings,day)
+                self.assertEqual(result['status'],'imported')
+                self.assertFalse(result['email_submitted'])
+                smtp.assert_not_called()
+                self.assertFalse(self.store.has_delivery(day))
+                server=MagicMock(); server.send_message.return_value={}
+                with patch('emailbot.delivery.smtplib.SMTP',return_value=server):
+                    result=send_report(self.settings,day,resend=True)
+                self.assertEqual(result['status'],'sent')
+                self.assertTrue(all(r['status']=='sent' for r in result['deliveries']))
+                self.assertEqual(server.send_message.call_count,len(self.settings.recipients))
+
+    def test_reimport_preserves_locally_edited_imported_report(self):
+        legacy=self.root/'legacy.db'
+        day='2000-01-01'
+        with closing(sqlite3.connect(legacy)) as c, c:
+            c.execute('CREATE TABLE dailyNews(id,date,news,aiReply)')
+            c.execute('INSERT INTO dailyNews VALUES (1,?,?,?)',(day,'旧新闻','旧报告'))
+        self.store.import_history(legacy)
+        sources={'sources':[{'url':'https://example.com/article','claim':'补写事实'}]}
+        save_report(self.settings,day,'补写报告',sources)
+        with closing(sqlite3.connect(legacy)) as c, c:
+            c.execute("UPDATE dailyNews SET aiReply='再次导入的旧报告'")
+        self.store.import_history(legacy)
+        record=self.store.get(day)
+        self.assertEqual(record['report'],'补写报告')
+        self.assertEqual(json.loads(record['research']),sources)
+        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+            smtp.return_value.send_message.return_value={}
+            self.assertEqual(send_report(self.settings,day)['status'],'imported')
+        smtp.assert_not_called()
+
+    def test_existing_schema_migrates_and_preserves_delivery_and_provenance(self):
+        old=self.root/'old-schema.db'
+        sources={'sources':[{'url':'https://example.com/old','claim':'原报告事实'}]}
+        with closing(sqlite3.connect(old)) as c, c:
+            c.execute('''CREATE TABLE reports (
+                date TEXT PRIMARY KEY, news TEXT NOT NULL DEFAULT '',
+                report TEXT NOT NULL DEFAULT '', research TEXT NOT NULL DEFAULT '[]',
+                news_metadata TEXT NOT NULL DEFAULT '{}',
+                origin TEXT NOT NULL DEFAULT 'local', updated_at TEXT NOT NULL)''')
+            c.execute('''CREATE TABLE deliveries (
+                date TEXT NOT NULL REFERENCES reports(date), recipient TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                message_id TEXT NOT NULL, error TEXT, updated_at TEXT NOT NULL,
+                PRIMARY KEY (date,recipient))''')
+            c.executemany('INSERT INTO reports VALUES (?,?,?,?,?,?,?)',[
+                ('2000-01-01','旧新闻','旧报告',json.dumps(sources),'{}','hermes','old-stamp'),
+                ('2000-01-02','本地新闻','本地报告','[]','{}','local','old-stamp')])
+            c.execute('INSERT INTO deliveries VALUES (?,?,?,?,?,?,?)',
+                ('2000-01-02','one@example.com','sent',1,'<old@example.com>',None,'old-stamp'))
+        settings=replace(self.settings,db_path=old,report_dir=self.root/'old-reports')
+        # Open twice to verify migration is safe to repeat.
+        for _ in range(2):
+            store=Store(old)
+            try:
+                record=store.get('2000-01-01')
+                self.assertEqual(record['origin'],'hermes')
+                self.assertEqual(record['report'],'旧报告')
+                self.assertEqual(json.loads(record['research']),sources)
+                self.assertEqual(store.delivery('2000-01-02','one@example.com')['status'],'sent')
+            finally: store.close()
+        save_report(settings,'2000-01-01','补写报告')
+        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+            smtp.return_value.send_message.return_value={}
+            self.assertEqual(send_report(settings,'2000-01-01')['status'],'imported')
         smtp.assert_not_called()
 
     def test_partial_delivery_only_retries_failed_recipient(self):

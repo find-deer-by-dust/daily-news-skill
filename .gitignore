@@ -1,35 +1,27 @@
-# Go build artifacts
-emailBot
-*.exe
-*.test
-*.out
+# Local Python environment and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
 
-# Other files and folders
-.settings/
-.claude/
-
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
-*.pyc
-*.log
-
-# Environment
+# Private configuration; keep the template versioned
 .env
+.env.*
+!.env.example
 
-# Local SQLite databases
+# Local news, reports, logs and migration backups
+/data/
 *.db
+*.db-*
+*.db.lock
 *.sqlite
+*.sqlite-*
 *.sqlite3
-
-# Misc
-1.*
-test.*
+*.sqlite3-*
+*.log

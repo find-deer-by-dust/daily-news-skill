@@ -1,17 +1,9 @@
-from NewsService import NewsService
-import logging
-from config import validate_config_or_exit
+"""Repository shortcut to the daily-news Skill helpers. No automatic email action."""
+from pathlib import Path
+import runpy
 
-logger = logging.getLogger(__name__)
-
-def main():
-    validate_config_or_exit()
-    logger.info("正在启动 EmailBot 应用程序...")
-    try:
-        service = NewsService(ai_news_coverage_days=7)
-        service.run_daily_task()
-    except Exception as e:
-        logger.critical(f"主程序发生未处理的异常: {e}", exc_info=True)
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    script = Path(__file__).resolve().parent / '.agents/skills/daily-news/scripts/news.py'
+    import sys
+    sys.path.insert(0, str(script.parent))
+    runpy.run_path(str(script), run_name='__main__')

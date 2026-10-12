@@ -52,8 +52,8 @@ test -f .env || cp .env.example .env
 # 获取新闻与完整历史上下文
 .venv/bin/python main.py fetch
 .venv/bin/python main.py context
-# Agent 将报告与来源写入文件后保存
-.venv/bin/python main.py save-report --date YYYY-MM-DD --file data/reports/draft.md --sources data/reports/sources.json
+# Agent 将报告与来源写入本次专用系统临时目录，保存成功后清理临时输入
+.venv/bin/python main.py save-report --date YYYY-MM-DD --file /absolute/task-temp/report.md --sources /absolute/task-temp/sources.json
 # 预览；不连接 SMTP
 .venv/bin/python main.py send --date YYYY-MM-DD --dry-run
 # 已有邮件任务授权时投递
@@ -61,6 +61,8 @@ test -f .env || cp .env.example .env
 ```
 
 直接运行 `main.py` 显示帮助。`status` 查看状态，`show --date YYYY-MM-DD` 读取报告。脚本不会自行分析或核查新闻。
+
+新闻、报告、来源和投递状态持久化到 SQLite。`fetch` / `context` 输出在内存中处理，不另存上下文缓存；报告和来源的临时输入保存后立即清理，任务失败结束前也清理。`data/reports/` 仅保留工具导出的正式日期报告及来源文件。
 
 定时任务中使用 Python 和脚本的绝对路径，例如 `/opt/emailbot/.venv/bin/python /opt/emailbot/main.py`。
 

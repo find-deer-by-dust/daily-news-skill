@@ -18,8 +18,8 @@ Agent 负责选题、调用自己的搜索/网页提取工具、核查和写作�
 ## 工具位置与配置
 
 所有配套实现都在本 Skill 的 `scripts/` 中。运行 [scripts/news.py](scripts/news.py)，依赖见 [scripts/requirements.txt](scripts/requirements.txt)。
-Linux 使用 Python 3.10 或更新版本。在 emailBot 仓库中使用 `.venv/bin/python main.py`；复制 Skill 后使用目标环境的 Python。
-复制 Skill 到其他 Agent 环境时可直接使用系统 Python 或自己的虚拟环境，并通过 `--env-file` 指定新闻和邮箱配置。默认数据库为 data/emailbot.db，报告目录为 data/reports。数据库和报告的相对路径以 `.env` 所在目录为基准；仓库内默认使用仓库根目录 `.env`。
+Linux 使用 Python 3.10 或更新版本。在 daily-news 仓库中使用 `.venv/bin/python main.py`；复制 Skill 后使用目标环境的 Python。
+复制 Skill 到其他 Agent 环境时可直接使用系统 Python 或自己的虚拟环境，并通过 `--env-file` 指定新闻和邮箱配置。默认数据库为 data/daily-news.db，报告目录为 data/reports。数据库和报告的相对路径以 `.env` 所在目录为基准；仓库内默认使用仓库根目录 `.env`。
 
 将实际 Python 可执行文件和 `scripts/news.py` 的绝对路径用于命令，尤其是定时任务。下列 `python3 scripts/news.py` 表示从本 Skill 目录执行，请按目标环境替换 Python 可执行文件。不要把密码或 Token 写入命令、报告或输出。
 

@@ -9,7 +9,7 @@ from dotenv import dotenv_values
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HOME = SKILL_ROOT.parents[2] if SKILL_ROOT.parent.parent.name == '.agents' else SKILL_ROOT
-ROOT = Path(os.environ.get('EMAILBOT_HOME') or DEFAULT_HOME).expanduser().resolve()
+ROOT = Path(os.environ.get('DAILY_NEWS_HOME') or DEFAULT_HOME).expanduser().resolve()
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class Settings:
         if any('@' not in r or '\n' in r or '\r' in r for r in users):
             raise ValueError('收件人邮箱格式无效')
         result = cls(
-            db_path=path(str(db_path) if db_path else get('SQLITE_DB_PATH', get('DB_PATH', 'data/emailbot.db'))),
+            db_path=path(str(db_path) if db_path else get('SQLITE_DB_PATH', get('DB_PATH', 'data/daily-news.db'))),
             report_dir=path(get('REPORT_DIR', 'data/reports')),
             timezone=get('TIMEZONE', 'Asia/Shanghai'),
             news_url=get('NEWS_API_URL', 'https://v3.alapi.cn/api/zaobao'),

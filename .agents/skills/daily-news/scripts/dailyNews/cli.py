@@ -44,7 +44,7 @@ def cli(argv=None):
         logs = settings.db_path.parent / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
-            handlers=[logging.StreamHandler(), RotatingFileHandler(logs / 'emailbot.log',
+            handlers=[logging.StreamHandler(), RotatingFileHandler(logs / 'daily-news.log',
                 maxBytes=2_000_000, backupCount=5, encoding='utf-8')])
         if args.report_dir: settings = replace(settings, report_dir=args.report_dir.resolve())
         day = getattr(args, 'date', None) or today(settings)

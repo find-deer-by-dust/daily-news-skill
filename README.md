@@ -1,4 +1,4 @@
-# EmailBot
+# Daily News
 
 每日新闻 Skill：Agent 获取新闻、结合历史选题、使用自己的搜索能力核查和写作，再保存报告并完成已授权的邮件投递。Python 工具负责新闻 API、SQLite、文件和 SMTP；配置中只需要新闻和邮箱凭据。
 
@@ -11,10 +11,10 @@
   references/report-guide.md  报告和来源要求
   scripts/news.py             工具入口
   scripts/requirements.txt    唯一的依赖版本清单
-  scripts/emailbot/           新闻、存储和邮件实现
+  scripts/dailyNews/          新闻、存储和邮件实现
 tests/                        临时数据库和模拟 SMTP 测试
 data/                         本地运行数据，Git 忽略
-  emailbot.db                  新闻、报告和投递状态
+  daily-news.db               新闻、报告和投递状态
   reports/                    报告及来源文件
   logs/                       运行日志
   backups/                    原始数据库、配置和迁移来源备份
@@ -32,7 +32,7 @@ requirements.txt              引用 Skill 的依赖清单
 
 修改报告正文但未提供 `--sources` 时会清空旧来源；正文不变且未提供来源时保留已有记录。提供 `--sources` 时以新记录为准，导出的来源文件与数据库保持一致。
 
-交接历史数据时另外携带 `data/emailbot.db`，库内已包含报告和来源；`data/reports/` 是可重新导出的文件。Git 忽略 `data/`，因此克隆仓库或只复制 Skill 目录不会携带历史数据库。目标环境自行提供 `.env` 并重建虚拟环境，原机器的 `.venv/` 和 `data/backups/` 无需复制。
+交接历史数据时另外携带 `data/daily-news.db`，库内已包含报告和来源；`data/reports/` 是可重新导出的文件。Git 忽略 `data/`，因此克隆仓库或只复制 Skill 目录不会携带历史数据库。目标环境自行提供 `.env` 并重建虚拟环境，原机器的 `.venv/` 和 `data/backups/` 无需复制。
 
 ## Linux 使用
 
@@ -64,15 +64,15 @@ test -f .env || cp .env.example .env
 
 新闻、报告、来源和投递状态持久化到 SQLite。`fetch` / `context` 输出在内存中处理，不另存上下文缓存；报告和来源的临时输入保存后立即清理，任务失败结束前也清理。`data/reports/` 仅保留工具导出的正式日期报告及来源文件。
 
-定时任务中使用 Python 和脚本的绝对路径，例如 `/opt/emailbot/.venv/bin/python /opt/emailbot/main.py`。
+定时任务中使用 Python 和脚本的绝对路径，例如 `/opt/daily-news/.venv/bin/python /opt/daily-news/main.py`。
 
-数据库和报告的相对路径以 `.env` 所在目录为基准，默认是 `data/emailbot.db` 和 `data/reports`；环境变量优先于 `.env`。复制 Skill 后使用：
+数据库和报告的相对路径以 `.env` 所在目录为基准，默认是 `data/daily-news.db` 和 `data/reports`；环境变量优先于 `.env`。复制 Skill 后使用：
 
 ```bash
-/opt/emailbot/.venv/bin/python /opt/agent/skills/daily-news/scripts/news.py --env-file /opt/emailbot/.env check
+/opt/daily-news/.venv/bin/python /opt/agent/skills/daily-news/scripts/news.py --env-file /opt/daily-news/.env check
 ```
 
-`EMAILBOT_HOME` 可指定默认配置目录；未指定时，仓库内使用根目录，独立 Skill 使用自身目录。
+`DAILY_NEWS_HOME` 可指定默认配置目录；未指定时，仓库内使用根目录，独立 Skill 使用自身目录。
 
 ## 投递与定时运行
 

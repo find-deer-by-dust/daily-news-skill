@@ -2,9 +2,11 @@ from dataclasses import replace
 from contextlib import closing
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import smtplib
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,11 +14,11 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.agents/skills/daily-news/scripts'))
-from emailbot.delivery import Delivery
-from emailbot.news import NewsClient
-from emailbot.settings import Settings
-from emailbot.store import Store, run_lock
-from emailbot.workflow import context, fetch, save_report, send_report
+from dailyNews.delivery import Delivery
+from dailyNews.news import NewsClient
+from dailyNews.settings import Settings
+from dailyNews.store import Store, run_lock
+from dailyNews.workflow import context, fetch, save_report, send_report
 
 
 class WorkflowTests(unittest.TestCase):
@@ -73,7 +75,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.store.get(self.day)['report'],'已保存报告')
 
     def test_fetch_cache_without_credentials_or_external_calls(self):
-        with patch('emailbot.workflow.NewsClient') as client:
+        with patch('dailyNews.workflow.NewsClient') as client:
             result=fetch(replace(self.settings,news_key=''),self.day)
         client.assert_not_called()
         self.assertTrue(result['cached'])
@@ -82,7 +84,7 @@ class WorkflowTests(unittest.TestCase):
     def test_fetch_saves_raw_news_and_leaves_analysis_to_agent(self):
         self.store.conn.execute('DELETE FROM reports WHERE date=?',(self.day,)); self.store.conn.commit()
         client=MagicMock(); client.fetch.return_value=('新新闻',{'date':self.day})
-        with patch('emailbot.workflow.NewsClient',return_value=client):
+        with patch('dailyNews.workflow.NewsClient',return_value=client):
             result=fetch(self.settings,self.day)
         self.assertFalse(result['cached'])
         self.assertEqual(result['news'],'新新闻')
@@ -91,7 +93,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_save_agent_report_without_semantic_checks_or_network(self):
         sources={'sources':[{'url':'https://example.com/article','claim':'Agent 已核查的说法'}]}
-        with patch('emailbot.http.requests.Session.post') as network:
+        with patch('dailyNews.http.requests.Session.post') as network:
             result=save_report(self.settings,self.day,'Agent 提供的简短纯文本报告',sources)
         network.assert_not_called()
         self.assertTrue(result['saved'])
@@ -131,21 +133,21 @@ class WorkflowTests(unittest.TestCase):
             save_report(self.settings,'1999-01-01','报告')
 
     def test_dry_run_never_connects_smtp_or_marks_sent(self):
-        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             result=send_report(self.settings,self.day,dry_run=True)
         self.assertEqual(result['status'],'preview'); smtp.assert_not_called()
         self.assertIsNone(self.store.delivery(self.day,'one@example.com'))
 
     def test_send_without_report_does_not_generate_one(self):
         self.store.conn.execute("UPDATE reports SET report='' WHERE date=?",(self.day,)); self.store.conn.commit()
-        with patch('emailbot.http.requests.Session.post') as network, patch('emailbot.delivery.smtplib.SMTP') as smtp:
+        with patch('dailyNews.http.requests.Session.post') as network, patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             with self.assertRaisesRegex(ValueError,'Agent 分析'):
                 send_report(self.settings,self.day)
         network.assert_not_called(); smtp.assert_not_called()
 
     def test_imported_report_is_not_resent_by_default(self):
         self.store.conn.execute("UPDATE reports SET origin='hermes' WHERE date=?",(self.day,)); self.store.conn.commit()
-        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             self.assertEqual(send_report(self.settings,self.day)['status'],'imported')
         smtp.assert_not_called()
 
@@ -161,14 +163,14 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(day=day):
                 save_report(self.settings,day,'补写报告',sources)
                 self.assertEqual(self.store.get(day)['origin'],str(legacy.resolve()))
-                with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+                with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
                     result=send_report(self.settings,day)
                 self.assertEqual(result['status'],'imported')
                 self.assertFalse(result['email_submitted'])
                 smtp.assert_not_called()
                 self.assertFalse(self.store.has_delivery(day))
                 server=MagicMock(); server.send_message.return_value={}
-                with patch('emailbot.delivery.smtplib.SMTP',return_value=server):
+                with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
                     result=send_report(self.settings,day,resend=True)
                 self.assertEqual(result['status'],'sent')
                 self.assertTrue(all(r['status']=='sent' for r in result['deliveries']))
@@ -189,7 +191,7 @@ class WorkflowTests(unittest.TestCase):
         record=self.store.get(day)
         self.assertEqual(record['report'],'补写报告')
         self.assertEqual(json.loads(record['research']),sources)
-        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             smtp.return_value.send_message.return_value={}
             self.assertEqual(send_report(self.settings,day)['status'],'imported')
         smtp.assert_not_called()
@@ -225,7 +227,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(store.delivery('2000-01-02','one@example.com')['status'],'sent')
             finally: store.close()
         save_report(settings,'2000-01-01','补写报告')
-        with patch('emailbot.delivery.smtplib.SMTP') as smtp:
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             smtp.return_value.send_message.return_value={}
             self.assertEqual(send_report(settings,'2000-01-01')['status'],'imported')
         smtp.assert_not_called()
@@ -233,10 +235,10 @@ class WorkflowTests(unittest.TestCase):
     def test_partial_delivery_only_retries_failed_recipient(self):
         good=MagicMock(); good.send_message.return_value={}
         bad=MagicMock(); bad.login.side_effect=smtplib.SMTPAuthenticationError(535,b'denied')
-        with patch('emailbot.delivery.smtplib.SMTP',side_effect=[good,bad]):
+        with patch('dailyNews.delivery.smtplib.SMTP',side_effect=[good,bad]):
             with self.assertRaises(RuntimeError): Delivery(self.settings,self.store).send(self.day,'report')
         again=MagicMock(); again.send_message.return_value={}
-        with patch('emailbot.delivery.smtplib.SMTP',return_value=again) as factory:
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=again) as factory:
             Delivery(self.settings,self.store).send(self.day,'report')
             factory.assert_called_once()
             self.assertEqual(again.send_message.call_args.kwargs['to_addrs'],['two@example.com'])
@@ -246,24 +248,44 @@ class WorkflowTests(unittest.TestCase):
     def test_lost_ack_blocks_blind_resend(self):
         settings=replace(self.settings,recipients=('one@example.com',))
         server=MagicMock(); server.send_message.side_effect=smtplib.SMTPServerDisconnected('lost ack')
-        with patch('emailbot.delivery.smtplib.SMTP',return_value=server):
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
             with self.assertRaises(RuntimeError): Delivery(settings,self.store).send(self.day,'report')
         self.assertEqual(self.store.delivery(self.day,'one@example.com')['status'],'unknown')
-        with patch('emailbot.delivery.smtplib.SMTP') as factory:
+        with patch('dailyNews.delivery.smtplib.SMTP') as factory:
             with self.assertRaises(RuntimeError): Delivery(settings,self.store).send(self.day,'report',resend=True)
             factory.assert_not_called()
+
+    def test_new_delivery_uses_daily_news_message_id(self):
+        settings=replace(self.settings,recipients=('one@example.com',))
+        server=MagicMock(); server.send_message.return_value={}
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
+            Delivery(settings,self.store).send(self.day,'report')
+        message_id=str(server.send_message.call_args.args[0]['Message-ID'])
+        self.assertTrue(message_id.startswith('<daily-news.'))
+        self.assertEqual(self.store.delivery(self.day,'one@example.com')['message_id'],message_id)
+
+    def test_retry_preserves_previously_stored_message_id(self):
+        settings=replace(self.settings,recipients=('one@example.com',))
+        message_id='<historical-message@example.com>'
+        self.store.begin_delivery(self.day,'one@example.com',message_id)
+        self.store.finish_delivery(self.day,'one@example.com','failed')
+        server=MagicMock(); server.send_message.return_value={}
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
+            Delivery(settings,self.store).send(self.day,'report')
+        self.assertEqual(str(server.send_message.call_args.args[0]['Message-ID']),message_id)
+        self.assertEqual(self.store.delivery(self.day,'one@example.com')['message_id'],message_id)
 
     def test_quit_failure_does_not_undo_acceptance(self):
         settings=replace(self.settings,recipients=('one@example.com',))
         server=MagicMock(); server.send_message.return_value={}
         server.quit.side_effect=smtplib.SMTPServerDisconnected('quit failed')
-        with patch('emailbot.delivery.smtplib.SMTP',return_value=server):
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
             Delivery(settings,self.store).send(self.day,'report')
         self.assertEqual(self.store.delivery(self.day,'one@example.com')['status'],'sent')
 
     def test_send_only_needs_mail_credentials(self):
         server=MagicMock(); server.send_message.return_value={}
-        with patch('emailbot.workflow.NewsClient') as news, patch('emailbot.delivery.smtplib.SMTP',return_value=server):
+        with patch('dailyNews.workflow.NewsClient') as news, patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
             result=send_report(replace(self.settings,news_key=''),self.day)
         news.assert_not_called(); self.assertEqual(result['status'],'sent')
 
@@ -293,8 +315,21 @@ class WorkflowTests(unittest.TestCase):
             settings=Settings.load(env)
         settings.validate()
         self.assertEqual(settings.news_key,'new')
-        self.assertEqual(settings.db_path,self.root/'data/emailbot.db')
+        self.assertEqual(settings.db_path,self.root/'data/daily-news.db')
         self.assertEqual(settings.report_dir,self.root/'data/reports')
+
+    def test_daily_news_home_locates_config_from_another_directory(self):
+        env=self.root/'.env'
+        env.write_text('NEWS_API_KEY=test-news\nEMAIL_ADDRESS=bot@example.com\nEMAIL_PASSWORD=test-password\nEMAIL_RECIPIENT=one@example.com\n',encoding='utf-8')
+        variables={**os.environ,'DAILY_NEWS_HOME':str(self.root),
+                   'SQLITE_DB_PATH':'data/daily-news.db','PYTHONIOENCODING':'utf-8'}
+        script=Path(__file__).resolve().parents[1]/'main.py'
+        result=subprocess.run([sys.executable,'-B',str(script),'check'],
+                              cwd=self.root,env=variables,capture_output=True,encoding='utf-8',check=True)
+        configured=json.loads(result.stdout)
+        self.assertTrue(configured['configured'])
+        self.assertEqual(Path(configured['database']),self.root/'data/daily-news.db')
+        self.assertTrue((self.root/'data/logs/daily-news.log').is_file())
 
 
 if __name__=='__main__': unittest.main()

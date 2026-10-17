@@ -23,7 +23,7 @@ class Delivery:
                 log.info('已发送，跳过收件人：%s', recipient)
                 continue
             digest = hashlib.sha256((day + recipient + report).encode()).hexdigest()[:32]
-            message_id = previous['message_id'] if previous else f'<emailbot.{digest}@{self.settings.email_address.split("@")[-1]}>'
+            message_id = previous['message_id'] if previous else f'<daily-news.{digest}@{self.settings.email_address.split("@")[-1]}>'
             msg = EmailMessage()
             msg['From'] = self.settings.email_address
             msg['To'] = recipient

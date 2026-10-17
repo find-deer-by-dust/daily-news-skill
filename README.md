@@ -76,6 +76,10 @@ test -f .env || cp .env.example .env
 
 ## 投递与定时运行
 
+邮件发送前使用 `markdown-it-py` 将已保存的 Markdown 转为 HTML，支持标题、加粗、列表、引用、表格、代码、图片和来源链接，采用单栏布局和内联样式。正文使用 `multipart/alternative`，同时包含 UTF-8 的 `text/plain` 原文与 `text/html` 排版版本；QQ 邮箱网页版和 iOS「邮件」可显示 HTML 正文。Markdown 中的原始 HTML 按文本显示，不执行其中的标签。
+
+实现方式参考 [Python 官方邮件示例](https://docs.python.org/3/library/email.examples.html)和 [markdown-it-py 文档](https://markdown-it-py.readthedocs.io/en/latest/using.html)。客户端最终显示效果需实际试收确认。
+
 按日期和收件人去重；成功投递的收件人默认跳过，失败重试只处理未成功者。出现投递记录后禁止修改该日期的报告、来源或新闻。导入历史报告默认不重发。
 
 SMTP 提交后断线或记账前崩溃会留下 `unknown` / `sending`。核对实际投递后，用 `resolve-delivery --date YYYY-MM-DD --recipient address --action sent|retry` 修正。`send --resend` 仅用于明确要求重发的情况。

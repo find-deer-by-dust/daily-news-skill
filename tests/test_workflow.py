@@ -1,6 +1,8 @@
 from dataclasses import replace
 from contextlib import closing
 from datetime import datetime
+from email import policy
+from email.parser import BytesParser
 import json
 import os
 from pathlib import Path
@@ -263,6 +265,34 @@ class WorkflowTests(unittest.TestCase):
         message_id=str(server.send_message.call_args.args[0]['Message-ID'])
         self.assertTrue(message_id.startswith('<daily-news.'))
         self.assertEqual(self.store.delivery(self.day,'one@example.com')['message_id'],message_id)
+
+    def test_send_report_submits_utf8_plain_and_html_alternatives(self):
+        report='# 中文早报\n\n## 今日摘要\n\n- **重要消息** [来源](https://example.com/news)\n'
+        save_report(self.settings,self.day,report)
+        server=MagicMock(); server.send_message.return_value={}
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
+            result=send_report(self.settings,self.day)
+        self.assertEqual(result['status'],'sent')
+        self.assertEqual(server.send_message.call_count,2)
+        for call in server.send_message.call_args_list:
+            message=BytesParser(policy=policy.default).parsebytes(call.args[0].as_bytes())
+            self.assertEqual(message.get_content_type(),'multipart/alternative')
+            parts=list(message.iter_parts())
+            self.assertEqual([p.get_content_type() for p in parts],['text/plain','text/html'])
+            self.assertTrue(all(p.get_content_charset()=='utf-8' for p in parts))
+            self.assertEqual(parts[0].get_content(),report)
+            self.assertIn('中文早报',parts[1].get_content())
+            self.assertIn('<h1 style=',parts[1].get_content())
+            self.assertIn('href="https://example.com/news"',parts[1].get_content())
+            self.assertEqual(str(message['To']),call.kwargs['to_addrs'][0])
+
+    def test_render_failure_does_not_connect_or_create_delivery(self):
+        with patch('dailyNews.delivery.render_report_html',side_effect=ValueError('render failed')):
+            with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
+                with self.assertRaisesRegex(ValueError,'render failed'):
+                    Delivery(self.settings,self.store).send(self.day,'report')
+        smtp.assert_not_called()
+        self.assertFalse(self.store.has_delivery(self.day))
 
     def test_retry_preserves_previously_stored_message_id(self):
         settings=replace(self.settings,recipients=('one@example.com',))

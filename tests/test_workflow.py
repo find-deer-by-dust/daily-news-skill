@@ -67,6 +67,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(result['history']),30)
         self.assertEqual(result['history'][-1]['date'],'2026-08-02')
         self.assertEqual(len(result['yesterday_report']),2000)
+        self.assertEqual(result['history_coverage'],{
+            'start_date':'2026-08-02','end_date':'2026-08-31',
+            'news_days':30,'report_days':30,'missing_news_dates':[]})
+
+    def test_history_includes_unselected_news_and_verification_sources(self):
+        metadata={'url':'https://example.com/raw','date':'2026-08-30'}
+        research={'sources':[{'url':'https://example.com/release','claim':'历史事件事实'}],
+                  'limitations':['历史判断仍需复核']}
+        self.store.save_news('2026-08-30','政策新闻；未被选入报告的产业新闻',metadata)
+        self.store.save_report('2026-08-30','只分析政策新闻',research)
+        self.store.save_news('2026-08-31','尚未生成报告的新闻',{})
+        result=context(self.store,'2026-09-01',2)
+        self.assertEqual([r['date'] for r in result['history']],['2026-08-31','2026-08-30'])
+        recent,earlier=result['history']
+        self.assertEqual(earlier['news'],'政策新闻；未被选入报告的产业新闻')
+        self.assertEqual(earlier['news_metadata'],metadata)
+        self.assertEqual(earlier['research'],research)
+        self.assertEqual(recent['news'],'尚未生成报告的新闻')
+        self.assertEqual(recent['report'],'')
+        self.assertEqual(recent['research'],[])
+        self.assertEqual(result['yesterday_report'],'')
+        # Context parsing must not alter the persisted source records.
+        self.assertEqual(json.loads(self.store.get('2026-08-30')['research']),research)
+
+    def test_history_coverage_reports_gaps_instead_of_assuming_full_month(self):
+        self.store.save_news('2026-08-29','窗口外新闻',{})
+        self.store.save_news('2026-08-30','历史新闻',{})
+        self.store.save_news('2026-08-31','',{})
+        self.store.save_report('2026-08-31','仅有报告，没有原始新闻')
+        self.store.save_news('2026-09-01','当日新闻',{})
+        self.store.save_news('2026-09-02','未来新闻',{})
+        result=context(self.store,'2026-09-01',2)
+        self.assertEqual(len(result['history']),2)
+        self.assertEqual(result['history_coverage'],{
+            'start_date':'2026-08-30','end_date':'2026-08-31',
+            'news_days':1,'report_days':1,'missing_news_dates':['2026-08-31']})
+        empty=context(self.store,'2000-01-03',2)
+        self.assertEqual(empty['history'],[])
+        self.assertEqual(empty['history_coverage'],{
+            'start_date':'2000-01-01','end_date':'2000-01-02',
+            'news_days':0,'report_days':0,'missing_news_dates':['2000-01-01','2000-01-02']})
 
     def test_import_preserves_local_reports(self):
         legacy=self.root/'legacy.db'

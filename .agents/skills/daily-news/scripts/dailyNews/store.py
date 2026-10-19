@@ -86,7 +86,8 @@ class Store:
     def history(self, day, days=30):
         cutoff = (date.fromisoformat(day) - timedelta(days=days)).isoformat()
         return [dict(row) for row in self.conn.execute(
-            'SELECT date,news,report FROM reports WHERE date>=? AND date<? ORDER BY date DESC',
+            '''SELECT date,news,news_metadata,report,research FROM reports
+               WHERE date>=? AND date<? ORDER BY date DESC''',
             (cutoff, day))]
 
     def delivery(self, day, recipient):

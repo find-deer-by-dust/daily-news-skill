@@ -15,13 +15,24 @@ def today(settings):
 def context(store, day, days=30):
     record = store.get(day)
     history = store.history(day, days)
+    for item in history:
+        item['news_metadata'] = json.loads(item['news_metadata'])
+        item['research'] = json.loads(item['research'])
+    end = date.fromisoformat(day)
+    window = [(end - timedelta(days=i)).isoformat() for i in range(days, 0, -1)]
+    news_dates = {item['date'] for item in history if item['news'].strip()}
+    coverage = {'start_date': window[0], 'end_date': window[-1],
+                'news_days': len(news_dates),
+                'report_days': sum(bool(item['report'].strip()) for item in history),
+                'missing_news_dates': [d for d in window if d not in news_dates]}
     yesterday = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
     previous = next((r['report'] for r in history if r['date'] == yesterday), '')
     return {'date': day, 'news': record['news'] if record else '',
             'news_metadata': json.loads(record['news_metadata']) if record else {},
             'saved_report': record['report'] if record else '',
             'origin': record['origin'] if record else None,
-            'yesterday_report': previous, 'history_days': days, 'history': history}
+            'yesterday_report': previous, 'history_days': days,
+            'history_coverage': coverage, 'history': history}
 
 
 def export_report(settings, day, report, sources):

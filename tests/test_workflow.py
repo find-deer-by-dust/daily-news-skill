@@ -389,6 +389,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(settings.db_path,self.root/'data/daily-news.db')
         self.assertEqual(settings.report_dir,self.root/'data/reports')
 
+    def test_email_recipient_parses_multiple_addresses_and_ignores_users(self):
+        env=self.root/'.env'
+        env.write_text('EMAIL_RECIPIENT= one@example.com, ,two@example.com,one@example.com,\n'
+                       'USERS=not-json\n',encoding='utf-8')
+        with patch.dict('os.environ',{'USERS':'["ignored@example.com"]'},clear=True):
+            settings=Settings.load(env)
+        self.assertEqual(settings.recipients,('one@example.com','two@example.com'))
+
+    def test_users_cannot_replace_missing_email_recipient(self):
+        env=self.root/'.env'
+        for recipient in ('','EMAIL_RECIPIENT=\n','EMAIL_RECIPIENT=   \n'):
+            with self.subTest(recipient=recipient):
+                env.write_text('NEWS_API_KEY=test-news\nEMAIL_ADDRESS=bot@example.com\n'
+                               'EMAIL_PASSWORD=test-password\nUSERS=["old@example.com"]\n'
+                               +recipient,encoding='utf-8')
+                with patch.dict('os.environ',{'USERS':'["ignored@example.com"]'},clear=True):
+                    settings=Settings.load(env)
+                settings.validate('fetch')
+                with self.assertRaisesRegex(ValueError,'^缺少配置: EMAIL_RECIPIENT$'):
+                    settings.validate('send')
+
     def test_daily_news_home_locates_config_from_another_directory(self):
         env=self.root/'.env'
         env.write_text('NEWS_API_KEY=test-news\nEMAIL_ADDRESS=bot@example.com\nEMAIL_PASSWORD=test-password\nEMAIL_RECIPIENT=one@example.com\n',encoding='utf-8')

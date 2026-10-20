@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from pathlib import Path
-import json
 import os
 from zoneinfo import ZoneInfo
 
@@ -42,14 +41,8 @@ class Settings:
             p = Path(value).expanduser()
             return p if p.is_absolute() else base / p
 
-        recipients = get('EMAIL_RECIPIENT')
-        if recipients:
-            users = [r.strip() for r in recipients.split(',') if r.strip()]
-        else:
-            users = json.loads(get('USERS', '[]'))
-            if not isinstance(users, list) or not all(isinstance(r, str) for r in users):
-                raise ValueError('USERS 必须是邮箱字符串数组')
-        if any('@' not in r or '\n' in r or '\r' in r for r in users):
+        recipients = [r.strip() for r in get('EMAIL_RECIPIENT').split(',') if r.strip()]
+        if any('@' not in r or '\n' in r or '\r' in r for r in recipients):
             raise ValueError('收件人邮箱格式无效')
         result = cls(
             db_path=path(str(db_path) if db_path else get('SQLITE_DB_PATH', get('DB_PATH', 'data/daily-news.db'))),
@@ -58,7 +51,7 @@ class Settings:
             news_url=get('NEWS_API_URL', 'https://v3.alapi.cn/api/zaobao'),
             news_key=get('NEWS_API_KEY'),
             email_address=get('EMAIL_ADDRESS'), email_password=get('EMAIL_PASSWORD'),
-            recipients=tuple(dict.fromkeys(users)),
+            recipients=tuple(dict.fromkeys(recipients)),
             smtp_host=get('SMTP_HOST', 'smtp.163.com'), smtp_port=int(get('SMTP_PORT', '25')),
             smtp_security=get('SMTP_SECURITY', 'starttls').lower(),
             retries=int(get('HTTP_RETRIES', '3')), timeout=int(get('HTTP_TIMEOUT', '30')),

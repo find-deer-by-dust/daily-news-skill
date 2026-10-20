@@ -25,6 +25,8 @@ requirements.txt              引用 Skill 的依赖清单
 
 实际 `.env` 和 `.venv/` 留在仓库根目录，均被 Git 忽略。Skill 是完整的可复制目录；迁移到其他 Agent 时，复制 `daily-news/` 并指定配置和数据位置。
 
+收件人使用 `EMAIL_RECIPIENT` 配置，多个邮箱用英文逗号分隔，例如 `EMAIL_RECIPIENT=a@example.com,b@example.com`。发送邮件时该项不能为空。
+
 
 数据库使用 `reports` 保存新闻、报告及核查来源，`deliveries` 保存投递状态，`imports` 记录历史导入。历史导入和补写报告默认不重发；旧任务的投递状态无法追溯时，不会补造成功记录。
 

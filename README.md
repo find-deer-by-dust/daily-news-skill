@@ -88,7 +88,7 @@ test -f .env || cp .env.example .env
 
 SMTP 提交后断线或记账前崩溃会留下 `unknown` / `sending`。核对实际投递后，用 `resolve-delivery --date YYYY-MM-DD --recipient address --action sent|retry` 修正。`send --resend` 仅用于明确要求重发的情况。
 
-定时触发由宿主 Agent 负责，触发后执行 Skill 完整流程。Hermes 原有北京时间每天 12:05 的新闻任务尚未切换；迁移调度时停用该旧任务，避免重复投递。
+定时触发由宿主 Agent 负责，触发后执行 Skill 完整流程。
 
 ## 验证
 
@@ -97,3 +97,7 @@ SMTP 提交后断线或记账前崩溃会留下 `unknown` / `sending`。核对�
 ```
 
 测试使用临时数据和模拟 SMTP，不提交真实邮件。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

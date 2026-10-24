@@ -7,7 +7,7 @@ from dotenv import dotenv_values
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_HOME = SKILL_ROOT.parents[2] if SKILL_ROOT.parent.parent.name == '.agents' else SKILL_ROOT
+DEFAULT_HOME = SKILL_ROOT
 ROOT = Path(os.environ.get('DAILY_NEWS_HOME') or DEFAULT_HOME).expanduser().resolve()
 
 

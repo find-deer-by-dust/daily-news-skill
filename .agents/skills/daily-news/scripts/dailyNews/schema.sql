@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE TABLE IF NOT EXISTS deliveries (
     date TEXT NOT NULL REFERENCES reports(date), recipient TEXT NOT NULL,
     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-    message_id TEXT NOT NULL, error TEXT, updated_at TEXT NOT NULL,
+    message_id TEXT NOT NULL, error TEXT, updated_at TEXT NOT NULL, sent_at TEXT,
     PRIMARY KEY (date,recipient)
 );
 CREATE TABLE IF NOT EXISTS imports (

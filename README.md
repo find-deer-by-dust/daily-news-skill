@@ -30,7 +30,9 @@ requirements.txt              引用 Skill 的依赖清单
 
 数据库使用 `reports` 保存新闻、报告及核查来源，`deliveries` 保存投递状态，`imports` 记录历史导入。历史导入和补写报告默认不重发；旧任务的投递状态无法追溯时，不会补造成功记录。
 
-`fetch` / `context` 默认返回报告日期前30个自然日至昨天的原始新闻、新闻元数据、报告和已保存的核查来源（`history[].research`），包括未被选入旧报告的新闻。`history_coverage` 给出本地窗口、新闻/报告天数及缺少原始新闻的日期；`HISTORY_DAYS` 或 `context --days` 可调整窗口。新闻 API 仅抓取当天，不会自动回补历史；Agent 按今日事件搜索补齐近月关键进展，说明仍存在的覆盖缺口。历史选题用于发现线索和避免重复复述，历史结论须回到来源复核。同一主题出现重要进展或反证时继续分析，并明确今日增量。
+`fetch` / `context` 默认返回今日新闻、已保存的当日报告、完整昨日报告，以及报告日期前30个自然日至昨天的历史新闻、新闻元数据和报告/来源长度索引（`report_chars` / `research_chars`），包括未被选入旧报告的新闻。历史报告和来源正文按需用 `context --history-detail full` 分页读取，默认每页3条；摘要模式默认每页30条。`--history-offset` / `--history-limit` 控制页数，`history_page.next_offset` 指出下一页，按日期倒序排列。完整模式中昨天的条目以 `report_ref: "yesterday_report"` 引用顶层昨日报告，避免重复传输。
+
+`history_coverage` 始终统计整个历史窗口，给出新闻/报告天数及缺少原始新闻的日期；`HISTORY_DAYS` 或 `context --days` 可调整窗口。新闻 API 仅抓取当天，不会自动回补历史；Agent 按今日事件搜索补齐近月关键进展，说明仍存在的覆盖缺口。历史选题用于发现线索和避免重复复述，历史结论须回到来源复核。同一主题出现重要进展或反证时继续分析，并明确今日增量。
 
 `origin` 保留历史导入来源，`report_origin` 单独记录报告来源。补写导入报告后仍需明确使用 `send --resend` 才能发送，再次导入旧数据也不会覆盖已补写的报告。旧数据库首次打开时自动补充 `report_origin`，保留原报告、来源和投递状态。
 
@@ -53,12 +55,13 @@ test -f .env || cp .env.example .env
 让 Agent 阅读 [.agents/skills/daily-news/SKILL.md](.agents/skills/daily-news/SKILL.md)，或在支持 Skill 的宿主中调用 `$daily-news`。
 
 ```bash
-# 获取新闻与完整历史上下文
+# 获取新闻与历史索引；按需分页读取历史报告和来源
 .venv/bin/python main.py fetch
 .venv/bin/python main.py context
+.venv/bin/python main.py context --history-detail full --history-offset 0 --history-limit 3
 # Agent 将报告与来源写入本次专用系统临时目录，保存成功后清理临时输入
 .venv/bin/python main.py save-report --date YYYY-MM-DD --file /absolute/task-temp/report.md --sources /absolute/task-temp/sources.json
-# 预览；不连接 SMTP
+# 预览数据库中的报告及来源；不连接 SMTP，不创建或改写导出文件
 .venv/bin/python main.py send --date YYYY-MM-DD --dry-run
 # 已有邮件任务授权时投递
 .venv/bin/python main.py send --date YYYY-MM-DD
@@ -76,7 +79,9 @@ test -f .env || cp .env.example .env
 /opt/daily-news/.venv/bin/python /opt/agent/skills/daily-news/scripts/news.py --env-file /opt/daily-news/.env check
 ```
 
-`DAILY_NEWS_HOME` 可指定默认配置目录；未指定时，仓库内使用根目录，独立 Skill 使用自身目录。
+`DAILY_NEWS_HOME` 可指定默认配置目录；未指定时，仓库快捷入口 `main.py` 使用仓库根目录，直接运行 Skill 的 `scripts/news.py` 使用 Skill 自身目录，包括安装在 `~/.agents/skills/daily-news/` 下的情况。`--env-file` 始终优先。
+
+JSON 输出在当前终端编码无法表示部分字符时使用 ASCII 转义，`json.loads` 可完整还原中文和 emoji；UTF-8 终端仍直接显示原文。`show` 的纯文本输出将无法编码的字符显示为反斜杠转义。详见 [Python JSON 编码说明](https://docs.python.org/3/library/json.html#json.dump)。
 
 ## 投递与定时运行
 
@@ -84,7 +89,7 @@ test -f .env || cp .env.example .env
 
 实现方式参考 [Python 官方邮件示例](https://docs.python.org/3/library/email.examples.html)和 [markdown-it-py 文档](https://markdown-it-py.readthedocs.io/en/latest/using.html)。客户端最终显示效果需实际试收确认。
 
-按日期和收件人去重；成功投递的收件人默认跳过，失败重试只处理未成功者。出现投递记录后禁止修改该日期的报告、来源或新闻。导入历史报告默认不重发。
+按日期和收件人去重；成功投递的收件人默认跳过，失败重试只处理未成功者。仅有 `failed` 投递记录时允许修改报告、来源或刷新新闻后重试；任何收件人已成功或仍为 `unknown` / `sending` 时锁定该日期内容。成功时间 `sent_at` 会保留，后续重发失败也不会解锁；旧库自动迁移现有 `sent` 记录的成功时间。导入历史报告默认不重发。
 
 SMTP 提交后断线或记账前崩溃会留下 `unknown` / `sending`。核对实际投递后，用 `resolve-delivery --date YYYY-MM-DD --recipient address --action sent|retry` 修正。`send --resend` 仅用于明确要求重发的情况。
 

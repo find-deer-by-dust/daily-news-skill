@@ -53,6 +53,12 @@ class Store:
                 self.conn.execute('BEGIN')
                 self.conn.execute("ALTER TABLE reports ADD COLUMN report_origin TEXT NOT NULL DEFAULT ''")
                 self.conn.execute("UPDATE reports SET report_origin=origin WHERE report!=''")
+        delivery_columns = {row['name'] for row in self.conn.execute('PRAGMA table_info(deliveries)')}
+        if 'sent_at' not in delivery_columns:
+            with self.conn:
+                self.conn.execute('BEGIN')
+                self.conn.execute('ALTER TABLE deliveries ADD COLUMN sent_at TEXT')
+                self.conn.execute("UPDATE deliveries SET sent_at=updated_at WHERE status='sent'")
         legacy = self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='dailyNews'").fetchone()
         if legacy and not self.conn.execute("SELECT 1 FROM imports WHERE source='local-legacy'").fetchone():
             self._import_rows(self.conn.execute('SELECT date,news,aiReply FROM dailyNews ORDER BY id'),
@@ -83,12 +89,15 @@ class Store:
                 self.conn.execute('UPDATE reports SET research=? WHERE date=?',
                                   (json.dumps(sources, ensure_ascii=False), day))
 
-    def history(self, day, days=30):
+    def history(self, day, days=30, *, summary=False, offset=0, limit=None):
         cutoff = (date.fromisoformat(day) - timedelta(days=days)).isoformat()
+        fields = 'date,news,news_metadata,length(report) report_chars,length(research) research_chars'
+        if not summary:
+            fields += ',report,research'
         return [dict(row) for row in self.conn.execute(
-            '''SELECT date,news,news_metadata,report,research FROM reports
-               WHERE date>=? AND date<? ORDER BY date DESC''',
-            (cutoff, day))]
+            f'''SELECT {fields} FROM reports
+                WHERE date>=? AND date<? ORDER BY date DESC LIMIT ? OFFSET ?''',
+            (cutoff, day, limit if limit is not None else -1, offset))]
 
     def delivery(self, day, recipient):
         row = self.conn.execute('SELECT * FROM deliveries WHERE date=? AND recipient=?',
@@ -103,12 +112,19 @@ class Store:
                 error=NULL,updated_at=excluded.updated_at''', (day, recipient, message_id, stamp()))
 
     def finish_delivery(self, day, recipient, status, error=None):
+        now = stamp()
         with self.conn:
-            self.conn.execute('UPDATE deliveries SET status=?,error=?,updated_at=? WHERE date=? AND recipient=?',
-                              (status, error, stamp(), day, recipient))
+            self.conn.execute('''UPDATE deliveries SET status=?,error=?,updated_at=?,
+                sent_at=CASE WHEN ?='sent' THEN COALESCE(sent_at,?) ELSE sent_at END
+                WHERE date=? AND recipient=?''', (status, error, now, status, now, day, recipient))
 
     def has_delivery(self, day):
         return self.conn.execute('SELECT 1 FROM deliveries WHERE date=?', (day,)).fetchone() is not None
+
+    def report_locked(self, day):
+        # A failed resend must not unlock a report that was accepted previously.
+        return self.conn.execute('''SELECT 1 FROM deliveries
+            WHERE date=? AND (status!='failed' OR sent_at IS NOT NULL)''', (day,)).fetchone() is not None
 
     def import_history(self, source):
         source = Path(source).resolve()

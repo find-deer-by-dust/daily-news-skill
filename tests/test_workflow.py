@@ -67,6 +67,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(result['history']),30)
         self.assertEqual(result['history'][-1]['date'],'2026-08-02')
         self.assertEqual(len(result['yesterday_report']),2000)
+        self.assertTrue(all('report' not in r and 'research' not in r for r in result['history']))
+        self.assertEqual(result['history'][0]['report_chars'],2000)
         self.assertEqual(result['history_coverage'],{
             'start_date':'2026-08-02','end_date':'2026-08-31',
             'news_days':30,'report_days':30,'missing_news_dates':[]})
@@ -78,18 +80,60 @@ class WorkflowTests(unittest.TestCase):
         self.store.save_news('2026-08-30','政策新闻；未被选入报告的产业新闻',metadata)
         self.store.save_report('2026-08-30','只分析政策新闻',research)
         self.store.save_news('2026-08-31','尚未生成报告的新闻',{})
-        result=context(self.store,'2026-09-01',2)
+        result=context(self.store,'2026-09-01',2,history_detail='full')
         self.assertEqual([r['date'] for r in result['history']],['2026-08-31','2026-08-30'])
         recent,earlier=result['history']
         self.assertEqual(earlier['news'],'政策新闻；未被选入报告的产业新闻')
         self.assertEqual(earlier['news_metadata'],metadata)
         self.assertEqual(earlier['research'],research)
         self.assertEqual(recent['news'],'尚未生成报告的新闻')
-        self.assertEqual(recent['report'],'')
+        self.assertNotIn('report',recent)
+        self.assertEqual(recent['report_ref'],'yesterday_report')
         self.assertEqual(recent['research'],[])
         self.assertEqual(result['yesterday_report'],'')
         # Context parsing must not alter the persisted source records.
         self.assertEqual(json.loads(self.store.get('2026-08-30')['research']),research)
+
+    def test_context_full_pages_cover_window_once_and_reference_yesterday(self):
+        for day in ('2026-08-28','2026-08-29','2026-08-30','2026-08-31'):
+            self.store.save_news(day,'新闻'+day,{'date':day})
+            self.store.save_report(day,'报告'+day,{'sources':[{'url':'https://example.com/'+day}]})
+        first=context(self.store,'2026-09-01',4,history_detail='full')
+        second=context(self.store,'2026-09-01',4,history_detail='full',history_offset=first['history_page']['next_offset'])
+        self.assertEqual(first['history_page'],{
+            'detail':'full','offset':0,'limit':3,'total':4,'has_more':True,'next_offset':3})
+        self.assertFalse(second['history_page']['has_more'])
+        self.assertIsNone(second['history_page']['next_offset'])
+        self.assertEqual(first['history_coverage'],second['history_coverage'])
+        rows=first['history']+second['history']
+        self.assertEqual([r['date'] for r in rows],['2026-08-31','2026-08-30','2026-08-29','2026-08-28'])
+        self.assertNotIn('report',rows[0])
+        self.assertEqual(rows[0]['report_ref'],'yesterday_report')
+        self.assertEqual(first['yesterday_report'],'报告2026-08-31')
+        for row in rows[1:]:
+            self.assertEqual(row['report'],'报告'+row['date'])
+        self.assertTrue(all(row['research']['sources'] for row in rows))
+        empty=context(self.store,'2026-09-01',4,history_offset=10)
+        self.assertEqual(empty['history'],[])
+        self.assertFalse(empty['history_page']['has_more'])
+
+    def test_context_summary_paginates_extended_window_without_losing_coverage(self):
+        from datetime import date,timedelta
+        for i in range(1,36):
+            day=(date(2026,9,1)-timedelta(days=i)).isoformat()
+            self.store.save_news(day,'新闻',{})
+        first=context(self.store,'2026-09-01',35)
+        second=context(self.store,'2026-09-01',35,history_offset=first['history_page']['next_offset'])
+        self.assertEqual(len(first['history']),30)
+        self.assertEqual(len(second['history']),5)
+        self.assertEqual(first['history_coverage']['news_days'],35)
+        self.assertEqual(first['history_coverage'],second['history_coverage'])
+
+    def test_context_rejects_invalid_window_and_page_arguments(self):
+        for kwargs in ({'days':0},{'days':-5},{'history_limit':0},
+                       {'history_limit':-1},{'history_offset':-1},{'history_detail':'bad'}):
+            with self.subTest(kwargs=kwargs),self.assertRaises(ValueError):
+                context(self.store,'2026-09-01',**kwargs)
 
     def test_history_coverage_reports_gaps_instead_of_assuming_full_month(self):
         self.store.save_news('2026-08-29','窗口外新闻',{})
@@ -181,6 +225,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['status'],'preview'); smtp.assert_not_called()
         self.assertIsNone(self.store.delivery(self.day,'one@example.com'))
 
+    def test_dry_run_preserves_exports_and_previews_without_them(self):
+        saved=save_report(self.settings,self.day,'预览正文',{'sources':[]})
+        paths=[Path(saved['path']),Path(saved['path']).with_suffix('.sources.json')]
+        for path in paths:
+            os.utime(path,ns=(1_600_000_000_000_000_000,1_600_000_000_000_000_000))
+        before=[(path.read_bytes(),path.stat().st_mtime_ns) for path in paths]
+        with patch('dailyNews.workflow.export_report') as export:
+            result=send_report(self.settings,self.day,dry_run=True)
+        export.assert_not_called()
+        self.assertEqual(result['report'],'预览正文')
+        self.assertEqual(result['sources'],{'sources':[]})
+        self.assertEqual(before,[(path.read_bytes(),path.stat().st_mtime_ns) for path in paths])
+        settings=replace(self.settings,report_dir=self.root/'missing-exports')
+        self.assertEqual(send_report(settings,self.day,dry_run=True)['report'],'预览正文')
+        self.assertFalse(settings.report_dir.exists())
+
     def test_send_without_report_does_not_generate_one(self):
         self.store.conn.execute("UPDATE reports SET report='' WHERE date=?",(self.day,)); self.store.conn.commit()
         with patch('dailyNews.http.requests.Session.post') as network, patch('dailyNews.delivery.smtplib.SMTP') as smtp:
@@ -268,6 +328,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(record['report'],'旧报告')
                 self.assertEqual(json.loads(record['research']),sources)
                 self.assertEqual(store.delivery('2000-01-02','one@example.com')['status'],'sent')
+                self.assertEqual(store.delivery('2000-01-02','one@example.com')['sent_at'],'old-stamp')
             finally: store.close()
         save_report(settings,'2000-01-01','补写报告')
         with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
@@ -361,13 +422,55 @@ class WorkflowTests(unittest.TestCase):
         news.assert_not_called(); self.assertEqual(result['status'],'sent')
 
     def test_delivery_blocks_report_and_source_changes(self):
-        self.store.begin_delivery(self.day,'one@example.com','<id@example.com>')
-        with self.assertRaisesRegex(ValueError,'不能覆盖'):
-            save_report(self.settings,self.day,'新报告')
-        with self.assertRaisesRegex(ValueError,'不能覆盖'):
-            save_report(self.settings,self.day,'已保存报告',{'sources':[]})
-        with self.assertRaisesRegex(ValueError,'不能刷新'):
+        for status in ('sending','unknown','sent'):
+            with self.subTest(status=status):
+                self.store.begin_delivery(self.day,'one@example.com','<id@example.com>')
+                self.store.finish_delivery(self.day,'one@example.com',status)
+                with self.assertRaisesRegex(ValueError,'不能覆盖'):
+                    save_report(self.settings,self.day,'新报告')
+                with self.assertRaisesRegex(ValueError,'不能覆盖'):
+                    save_report(self.settings,self.day,'已保存报告',{'sources':[]})
+                with self.assertRaisesRegex(ValueError,'不能刷新'):
+                    fetch(self.settings,self.day,refresh=True)
+
+    def test_failed_delivery_allows_correction_refresh_and_retry(self):
+        bad=MagicMock(); bad.login.side_effect=smtplib.SMTPAuthenticationError(535,b'denied')
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=bad):
+            with self.assertRaises(RuntimeError): send_report(self.settings,self.day)
+        self.assertTrue(self.store.has_delivery(self.day))
+        self.assertFalse(self.store.report_locked(self.day))
+        sources={'sources':[{'url':'https://example.com/correction'}]}
+        save_report(self.settings,self.day,'修正后的正文',sources)
+        with patch('dailyNews.workflow.NewsClient') as client:
+            client.return_value.fetch.return_value=('更新新闻',{})
             fetch(self.settings,self.day,refresh=True)
+        self.assertEqual(self.store.get(self.day)['news'],'更新新闻')
+        server=MagicMock(); server.send_message.return_value={}
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=server):
+            result=send_report(self.settings,self.day)
+        self.assertEqual(result['status'],'sent')
+        self.assertTrue(all(row['attempts']==2 for row in result['deliveries']))
+        self.assertEqual(server.send_message.call_args.args[0].get_body(preferencelist=('plain',)).get_content().strip(),
+                         '修正后的正文')
+        self.assertTrue(self.store.report_locked(self.day))
+
+    def test_partial_success_and_failed_resend_keep_report_locked(self):
+        self.store.begin_delivery(self.day,'one@example.com','<one@example.com>')
+        self.store.finish_delivery(self.day,'one@example.com','sent')
+        accepted=self.store.delivery(self.day,'one@example.com')['sent_at']
+        self.assertIsNotNone(accepted)
+        self.store.begin_delivery(self.day,'two@example.com','<two@example.com>')
+        self.store.finish_delivery(self.day,'two@example.com','failed')
+        with self.assertRaisesRegex(ValueError,'不能覆盖'):
+            save_report(self.settings,self.day,'修改正文')
+        # Even if a subsequent explicit resend fails for all recipients, acceptance persists.
+        bad=MagicMock(); bad.login.side_effect=smtplib.SMTPAuthenticationError(535,b'denied')
+        with patch('dailyNews.delivery.smtplib.SMTP',return_value=bad):
+            with self.assertRaises(RuntimeError): send_report(self.settings,self.day,resend=True)
+        self.assertTrue(all(self.store.delivery(self.day,r)['status']=='failed' for r in self.settings.recipients))
+        self.assertEqual(self.store.delivery(self.day,'one@example.com')['sent_at'],accepted)
+        with self.assertRaisesRegex(ValueError,'不能覆盖'):
+            save_report(self.settings,self.day,'修改正文')
 
     def test_stale_news_not_accepted(self):
         http=MagicMock(); http.post.return_value={'code':200,'data':{'date':'1999-01-01','news':['旧闻']}}

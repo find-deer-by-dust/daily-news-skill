@@ -12,27 +12,43 @@ def today(settings):
     return datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
 
 
-def context(store, day, days=30):
+def context(store, day, days=30, *, history_detail='summary', history_offset=0, history_limit=None):
+    if days < 1: raise ValueError('days 必须为正整数')
+    if history_detail not in {'summary', 'full'}: raise ValueError('无效的 history-detail')
+    if history_offset < 0: raise ValueError('history-offset 不能为负数')
+    if history_limit is None:
+        history_limit = 3 if history_detail == 'full' else 30
+    if history_limit < 1: raise ValueError('history-limit 必须为正整数')
     record = store.get(day)
-    history = store.history(day, days)
-    for item in history:
-        item['news_metadata'] = json.loads(item['news_metadata'])
-        item['research'] = json.loads(item['research'])
+    index = store.history(day, days, summary=True)
     end = date.fromisoformat(day)
     window = [(end - timedelta(days=i)).isoformat() for i in range(days, 0, -1)]
-    news_dates = {item['date'] for item in history if item['news'].strip()}
+    news_dates = {item['date'] for item in index if item['news'].strip()}
     coverage = {'start_date': window[0], 'end_date': window[-1],
                 'news_days': len(news_dates),
-                'report_days': sum(bool(item['report'].strip()) for item in history),
+                'report_days': sum(item['report_chars'] > 0 for item in index),
                 'missing_news_dates': [d for d in window if d not in news_dates]}
     yesterday = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
-    previous = next((r['report'] for r in history if r['date'] == yesterday), '')
+    previous = store.get(yesterday)
+    history = (store.history(day, days, offset=history_offset, limit=history_limit)
+               if history_detail == 'full' else index[history_offset:history_offset + history_limit])
+    for item in history:
+        item['news_metadata'] = json.loads(item['news_metadata'])
+        if history_detail == 'full':
+            item['research'] = json.loads(item['research'])
+            if item['date'] == yesterday:
+                del item['report']
+                item['report_ref'] = 'yesterday_report'
+    next_offset = history_offset + len(history)
     return {'date': day, 'news': record['news'] if record else '',
             'news_metadata': json.loads(record['news_metadata']) if record else {},
             'saved_report': record['report'] if record else '',
             'origin': record['origin'] if record else None,
-            'yesterday_report': previous, 'history_days': days,
-            'history_coverage': coverage, 'history': history}
+            'yesterday_report': previous['report'] if previous else '', 'history_days': days,
+            'history_coverage': coverage, 'history': history,
+            'history_page': {'detail': history_detail, 'offset': history_offset, 'limit': history_limit,
+                             'total': len(index), 'has_more': next_offset < len(index),
+                             'next_offset': next_offset if next_offset < len(index) else None}}
 
 
 def export_report(settings, day, report, sources):
@@ -55,8 +71,8 @@ def fetch(settings, day=None, *, refresh=False):
             cached = bool(record and record['news'] and not refresh)
             if not cached:
                 if day != today(settings): raise ValueError('新闻 API 只抓取当天，历史日期需先导入')
-                if refresh and store.has_delivery(day):
-                    raise ValueError('已有投递记录，不能刷新该日期的新闻')
+                if refresh and store.report_locked(day):
+                    raise ValueError('已有成功或待确认的投递，不能刷新该日期的新闻')
                 settings.validate('fetch')
                 news, metadata = NewsClient(settings, JsonHTTP(settings.retries, settings.timeout)).fetch(day)
                 store.save_news(day, news, metadata)
@@ -73,9 +89,9 @@ def save_report(settings, day, content, sources=None):
         try:
             record = store.get(day)
             if not record or not record['news']: raise ValueError('请先 fetch 获取并保存该日期的新闻')
-            if store.has_delivery(day):
+            if store.report_locked(day):
                 if record['report'] != content or (sources is not None and json.loads(record['research']) != sources):
-                    raise ValueError('已有投递记录，不能覆盖报告或来源记录')
+                    raise ValueError('已有成功或待确认的投递，不能覆盖报告或来源记录')
             else:
                 store.save_report(day, content, sources)
             record = store.get(day)
@@ -91,13 +107,15 @@ def send_report(settings, day=None, *, dry_run=False, resend=False):
         try:
             record = store.get(day)
             if not record or not record['report']: raise ValueError('没有已保存报告；请由 Agent 分析后先 save-report')
-            path = export_report(settings, day, record['report'], json.loads(record['research']))
             if dry_run:
-                return {'date': day, 'status': 'preview', 'path': str(path), 'email_submitted': False}
+                path = settings.report_dir / f'{day}.md'
+                return {'date': day, 'status': 'preview', 'path': str(path), 'email_submitted': False,
+                        'report': record['report'], 'sources': json.loads(record['research'])}
             if record['origin'] != 'local' and not resend:
                 return {'date': day, 'status': 'imported', 'email_submitted': False,
                         'note': '导入报告的旧投递状态未知，默认不重发；明确需要重发时使用 --resend'}
             settings.validate('send')
+            export_report(settings, day, record['report'], json.loads(record['research']))
             Delivery(settings, store).send(day, record['report'], resend=resend)
             states = [store.delivery(day, r) for r in settings.recipients]
             return {'date': day, 'status': 'sent', 'deliveries': states}

@@ -5,10 +5,23 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import sys
 
 from .settings import Settings
 from .store import Store, run_lock
 from .workflow import context, fetch, save_report, send_report, today
+
+
+def print_result(result, *, as_json=True):
+    text = json.dumps(result, ensure_ascii=False, indent=2) if as_json else result
+    encoding = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        # Python's backslashreplace can emit \U escapes, which are invalid JSON.
+        text = (json.dumps(result, ensure_ascii=True, indent=2) if as_json else
+                text.encode(encoding, errors='backslashreplace').decode(encoding))
+    print(text)
 
 
 def cli(argv=None):
@@ -23,6 +36,10 @@ def cli(argv=None):
     news.add_argument('--refresh', action='store_true')
     ctx = sub.add_parser('context', help='读取今日新闻、完整昨日报告和历史，不调用外部服务')
     ctx.add_argument('--days', type=int)
+    ctx.add_argument('--history-detail', choices=['summary', 'full'], default='summary',
+                     help='summary 返回历史新闻及长度索引；full 返回分页报告与来源')
+    ctx.add_argument('--history-offset', type=int, default=0, help='按日期倒序跳过的历史记录数')
+    ctx.add_argument('--history-limit', type=int, help='每页记录数；summary 默认30，full 默认3')
     save = sub.add_parser('save-report', help='保存 Agent 提供的报告与来源记录，不生成或核查内容')
     save.add_argument('--file', type=Path, required=True, help='Agent 写好的 UTF-8 报告')
     save.add_argument('--sources', type=Path, help='Agent 写好的来源 JSON')
@@ -62,14 +79,14 @@ def cli(argv=None):
                 store = Store(settings.db_path)
                 try:
                     if args.command == 'context':
-                        days = args.days or settings.history_days
-                        if days < 1: raise ValueError('days 必须为正整数')
-                        result = context(store, day, days)
+                        days = settings.history_days if args.days is None else args.days
+                        result = context(store, day, days, history_detail=args.history_detail,
+                            history_offset=args.history_offset, history_limit=args.history_limit)
                     elif args.command == 'status': result = store.status()
                     elif args.command == 'show':
                         record = store.get(day)
                         if not record or not record['report']: raise ValueError('该日期没有报告')
-                        print(record['report'])
+                        print_result(record['report'], as_json=False)
                         return 0
                     elif args.command == 'import-history':
                         result = {'imported_dates': store.import_history(args.source)}
@@ -81,7 +98,7 @@ def cli(argv=None):
                             'sent' if args.action == 'sent' else 'failed', 'manual resolution')
                         result = {'resolved': True, 'date': day, 'action': args.action}
                 finally: store.close()
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print_result(result)
         return 0
     except Exception as exc:
         logging.error('%s: %s', type(exc).__name__, exc)

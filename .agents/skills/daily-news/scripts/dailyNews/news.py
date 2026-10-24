@@ -16,6 +16,7 @@ class NewsClient:
         items = data.get('news')
         if not isinstance(items, list) or not items or not all(isinstance(i, str) and i.strip() for i in items):
             raise RuntimeError('新闻 API 返回的新闻列表为空或格式无效')
-        cleaned = [re.sub(r'^\d+[、.．]\s*', '', item).strip() for item in items]
+        # A bare ASCII dot may be a decimal point, so require whitespace after it.
+        cleaned = [re.sub(r'^\d{1,2}[、．]\s*|^\d{1,2}\.\s+', '', item).strip() for item in items]
         return '\n'.join(cleaned), {'date': day, 'items': cleaned,
             'weiyu': data.get('weiyu', ''), 'source_url': self.settings.news_url}

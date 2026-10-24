@@ -1,9 +1,10 @@
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 import io
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,101 @@ class CliTests(unittest.TestCase):
         with patch('dailyNews.cli.logging.error'):
             self.assertEqual(self.run_cli('resolve-delivery', '--date', self.day,
                                           '--recipient', recipient, '--action', 'retry'), (1, ''))
+
+    def test_import_history_merges_duplicates_and_preserves_local_reports(self):
+        source = self.root/'legacy.db'
+        with closing(sqlite3.connect(source)) as conn, conn:
+            conn.execute('CREATE TABLE dailyNews(id,date,news,aiReply)')
+            conn.executemany('INSERT INTO dailyNews VALUES (?,?,?,?)', [
+                (1, '2000-01-01', '历史新闻', ''), (2, '2000-01-01', '', '历史报告'),
+                (3, self.day, '旧新闻', '不覆盖本地报告')])
+        original = source.read_bytes()
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
+            for _ in range(2):
+                code, output = self.run_cli('import-history', str(source))
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)['imported_dates'], 1)
+        smtp.assert_not_called()
+        self.assertEqual(source.read_bytes(), original)
+        imported = self.store.get('2000-01-01')
+        self.assertEqual((imported['news'], imported['report']), ('历史新闻', '历史报告'))
+        self.assertEqual(imported['origin'], str(source.resolve()))
+        self.assertEqual(self.store.get(self.day)['report'], self.report)
+        self.assertFalse(self.store.has_delivery('2000-01-01'))
+
+    def test_import_history_invalid_sources_exit_one_without_creating_source(self):
+        missing = self.root/'missing.db'
+        invalid = self.root/'invalid.db'
+        with closing(sqlite3.connect(invalid)) as conn:
+            conn.execute('CREATE TABLE unrelated(value)')
+        for source in (missing, invalid, self.settings.db_path):
+            with self.subTest(source=source), patch('dailyNews.cli.logging.error'):
+                self.assertEqual(self.run_cli('import-history', str(source)), (1, ''))
+        self.assertFalse(missing.exists())
+        self.assertEqual(self.store.get(self.day)['report'], self.report)
+
+    def test_backup_command_creates_readable_snapshot_without_external_calls(self):
+        with patch('dailyNews.http.requests.Session.post') as network, patch('dailyNews.delivery.smtplib.SMTP') as smtp:
+            code, output = self.run_cli('backup')
+        self.assertEqual(code, 0)
+        target = Path(json.loads(output)['path'])
+        self.assertEqual(target.parent, self.settings.db_path.parent/'backups')
+        with closing(sqlite3.connect(target)) as snapshot:
+            self.assertEqual(snapshot.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+            self.assertEqual(snapshot.execute('SELECT report FROM reports WHERE date=?',
+                (self.day,)).fetchone()[0], self.report)
+        network.assert_not_called(); smtp.assert_not_called()
+
+    def test_export_reports_restores_all_reports_and_sources_without_database_changes(self):
+        self.store.save_news('2000-01-01', '仅新闻，无报告', {})
+        self.store.begin_delivery(self.day, 'one@example.com', '<id@example.com>')
+        self.store.finish_delivery(self.day, 'one@example.com', 'sent')
+        before = self.store.delivery(self.day, 'one@example.com')
+        for _ in range(2):
+            with patch('dailyNews.http.requests.Session.post') as network, patch('dailyNews.delivery.smtplib.SMTP') as smtp:
+                code, output = self.run_cli('export-reports')
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output)['exported_count'], 4)
+            network.assert_not_called(); smtp.assert_not_called()
+        reports = sorted(self.settings.report_dir.glob('*.md'))
+        self.assertEqual([p.stem for p in reports], ['2026-10-21', '2026-10-22', '2026-10-23', self.day])
+        for report in reports:
+            self.assertEqual(report.read_text(encoding='utf-8'), self.report)
+            sources = json.loads(report.with_suffix('.sources.json').read_text(encoding='utf-8'))
+            self.assertEqual(sources, {'sources': [{'title': '来源🔗'}]})
+        self.assertEqual(self.store.delivery(self.day, 'one@example.com'), before)
+
+    def test_export_date_range_override_and_empty_selection(self):
+        target = self.root/'exports'
+        code, output = self.run_cli('--report-dir', str(target), 'export-reports',
+            '--start-date', '2026-10-22', '--end-date', '2026-10-23')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)['dates'], ['2026-10-22', '2026-10-23'])
+        self.assertEqual(len(list(target.glob('*.md'))), 2)
+        code, output = self.run_cli('export-reports', '--end-date', '1999-01-01')
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)['exported_count'], 0)
+        with patch('dailyNews.cli.logging.error'):
+            self.assertEqual(self.run_cli('export-reports', '--start-date', '2026-10-24',
+                '--end-date', '2026-10-22'), (1, ''))
+
+    def test_export_utf8_legacy_blob_without_rewriting_database(self):
+        original = self.report.encode('utf-8')
+        with self.store.conn:
+            self.store.conn.execute('UPDATE reports SET report=? WHERE date=?', (original, self.day))
+        code, output = self.run_cli('export-reports', '--start-date', self.day)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output)['exported_count'], 1)
+        target = self.settings.report_dir/(self.day+'.md')
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.store.get(self.day)['report'], original)
+
+    def test_global_config_and_database_overrides_in_real_process(self):
+        result = self.run_process(['--env-file', str(self.env), '--db', 'alternate.db', 'status'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['reports'], [])
+        self.assertTrue((self.env.parent/'alternate.db').exists())
+        self.assertEqual(self.store.get(self.day)['report'], self.report)
 
     def run_process(self, args, encoding='utf-8', script=None, home=None):
         variables = {key: value for key, value in os.environ.items()

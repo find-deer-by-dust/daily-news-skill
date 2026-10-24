@@ -1,8 +1,10 @@
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import json
+import os
 import sqlite3
+import tempfile
 
 
 def stamp():
@@ -45,7 +47,24 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        try:
+            self._initialize()
+        except Exception:
+            self.conn.close()
+            raise
+
+    def _initialize(self):
         self.conn.execute('PRAGMA foreign_keys=ON')
+        tables = {row['name'] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        columns = {row['name'] for row in self.conn.execute('PRAGMA table_info(reports)')}
+        delivery_columns = {row['name'] for row in self.conn.execute('PRAGMA table_info(deliveries)')}
+        legacy_pending = 'dailyNews' in tables and ('imports' not in tables or not self.conn.execute(
+            "SELECT 1 FROM imports WHERE source='local-legacy'").fetchone())
+        if (('reports' in tables and 'report_origin' not in columns) or
+                ('deliveries' in tables and 'sent_at' not in delivery_columns) or legacy_pending):
+            # Snapshot the old schema and committed data before any migration writes.
+            # Failure aborts initialization rather than migrating without a backup.
+            self.backup(reason='pre-migration')
         self.conn.executescript(Path(__file__).with_name('schema.sql').read_text(encoding='utf-8'))
         columns = {row['name'] for row in self.conn.execute('PRAGMA table_info(reports)')}
         if 'report_origin' not in columns:
@@ -66,6 +85,24 @@ class Store:
 
     def close(self):
         self.conn.close()
+
+    def backup(self, *, reason='manual'):
+        directory = self.path.parent / 'backups'
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        prefix = f'{self.path.stem}.{reason}.{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}.'
+        fd, name = tempfile.mkstemp(prefix=prefix, suffix='.tmp', dir=directory)
+        os.close(fd)
+        temporary = Path(name)
+        target = temporary.with_suffix('.db')
+        try:
+            # The SQLite backup API includes committed WAL data; a file copy may not.
+            with closing(sqlite3.connect(temporary)) as snapshot:
+                self.conn.backup(snapshot)
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return target
 
     def get(self, day):
         row = self.conn.execute('SELECT * FROM reports WHERE date=?', (day,)).fetchone()
@@ -99,6 +136,12 @@ class Store:
                 WHERE date>=? AND date<? ORDER BY date DESC LIMIT ? OFFSET ?''',
             (cutoff, day, limit if limit is not None else -1, offset))]
 
+    def reports_for_export(self, start_date=None, end_date=None):
+        rows = self.conn.execute('''SELECT date,report,research FROM reports
+            WHERE report!='' AND (? IS NULL OR date>=?) AND (? IS NULL OR date<=?)
+            ORDER BY date''', (start_date, start_date, end_date, end_date))
+        return (dict(row) for row in rows)
+
     def delivery(self, day, recipient):
         row = self.conn.execute('SELECT * FROM deliveries WHERE date=? AND recipient=?',
                                 (day, recipient)).fetchone()
@@ -130,7 +173,7 @@ class Store:
         source = Path(source).resolve()
         if source == self.path.resolve():
             raise ValueError('不能从当前数据库导入自身')
-        with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as old:
+        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as old:
             old.row_factory = sqlite3.Row
             rows = old.execute('SELECT date,news,aiReply FROM dailyNews ORDER BY id').fetchall()
         return self._import_rows(rows, str(source))

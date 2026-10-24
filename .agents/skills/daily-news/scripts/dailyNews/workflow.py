@@ -52,6 +52,8 @@ def context(store, day, days=30, *, history_detail='summary', history_offset=0, 
 
 
 def export_report(settings, day, report, sources):
+    # Some legacy reports are UTF-8 BLOBs; decode for export without rewriting history.
+    if isinstance(report, bytes): report = report.decode('utf-8')
     settings.report_dir.mkdir(parents=True, exist_ok=True)
     target = settings.report_dir / f'{day}.md'
     for path, text in [(target, report),
@@ -60,6 +62,23 @@ def export_report(settings, day, report, sources):
         temp.write_text(text, encoding='utf-8')
         temp.replace(path)
     return target
+
+
+def export_reports(settings, *, start_date=None, end_date=None):
+    start_date = date.fromisoformat(start_date).isoformat() if start_date else None
+    end_date = date.fromisoformat(end_date).isoformat() if end_date else None
+    if start_date and end_date and start_date > end_date:
+        raise ValueError('start-date 不能晚于 end-date')
+    with run_lock(settings.db_path):
+        store = Store(settings.db_path)
+        try:
+            dates = []
+            for record in store.reports_for_export(start_date, end_date):
+                day = date.fromisoformat(record['date']).isoformat()
+                export_report(settings, day, record['report'], json.loads(record['research']))
+                dates.append(day)
+            return {'exported_count': len(dates), 'report_dir': str(settings.report_dir), 'dates': dates}
+        finally: store.close()
 
 
 def fetch(settings, day=None, *, refresh=False):
@@ -116,7 +135,8 @@ def send_report(settings, day=None, *, dry_run=False, resend=False):
                         'note': '导入报告的旧投递状态未知，默认不重发；明确需要重发时使用 --resend'}
             settings.validate('send')
             export_report(settings, day, record['report'], json.loads(record['research']))
-            Delivery(settings, store).send(day, record['report'], resend=resend)
+            result = Delivery(settings, store).send(day, record['report'], resend=resend)
             states = [store.delivery(day, r) for r in settings.recipients]
-            return {'date': day, 'status': 'sent', 'deliveries': states}
+            return {'date': day, 'status': 'sent' if result['email_submitted'] else 'skipped',
+                    **result, 'deliveries': states}
         finally: store.close()

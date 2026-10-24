@@ -9,7 +9,7 @@ import sys
 
 from .settings import Settings
 from .store import Store, run_lock
-from .workflow import context, fetch, save_report, send_report, today
+from .workflow import context, export_reports, fetch, save_report, send_report, today
 
 
 def print_result(result, *, as_json=True):
@@ -26,9 +26,9 @@ def print_result(result, *, as_json=True):
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description='daily-news Skill 数据与邮件工具；核查和分析由 Agent 完成')
-    parser.add_argument('--env-file', type=Path)
+    parser.add_argument('--env-file', type=Path, help='配置文件路径；默认由入口或 DAILY_NEWS_HOME 决定')
     parser.add_argument('--db', type=Path, help='数据库路径；相对路径以 .env 所在目录为基准')
-    parser.add_argument('--report-dir', type=Path)
+    parser.add_argument('--report-dir', type=Path, help='覆盖导出目录；相对路径以当前工作目录为基准')
     sub = parser.add_subparsers(dest='command', required=True)
     check = sub.add_parser('check', help='检查新闻/邮箱配置，不访问网络')
     check.add_argument('--scope', choices=['all', 'fetch', 'send'], default='all')
@@ -55,6 +55,10 @@ def cli(argv=None):
     sub.add_parser('status', help='查看最近报告与投递状态')
     history = sub.add_parser('import-history', help='导入旧 dailyNews 表')
     history.add_argument('source', type=Path)
+    sub.add_parser('backup', help='将数据库快照保存到数据库旁的 backups 目录，不备份配置')
+    export = sub.add_parser('export-reports', help='批量导出已保存报告及来源，不发送邮件')
+    export.add_argument('--start-date', type=lambda d: date.fromisoformat(d).isoformat())
+    export.add_argument('--end-date', type=lambda d: date.fromisoformat(d).isoformat())
     args = parser.parse_args(argv)
     try:
         settings = Settings.load(args.env_file, args.db)
@@ -74,6 +78,8 @@ def cli(argv=None):
             sources = json.loads(args.sources.read_text(encoding='utf-8-sig')) if args.sources else None
             result = save_report(settings, day, args.file.read_text(encoding='utf-8-sig'), sources)
         elif args.command == 'send': result = send_report(settings, day, dry_run=args.dry_run, resend=args.resend)
+        elif args.command == 'export-reports':
+            result = export_reports(settings, start_date=args.start_date, end_date=args.end_date)
         else:
             with run_lock(settings.db_path):
                 store = Store(settings.db_path)
@@ -83,6 +89,7 @@ def cli(argv=None):
                         result = context(store, day, days, history_detail=args.history_detail,
                             history_offset=args.history_offset, history_limit=args.history_limit)
                     elif args.command == 'status': result = store.status()
+                    elif args.command == 'backup': result = {'path': str(store.backup())}
                     elif args.command == 'show':
                         record = store.get(day)
                         if not record or not record['report']: raise ValueError('该日期没有报告')

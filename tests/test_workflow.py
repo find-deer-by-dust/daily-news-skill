@@ -330,11 +330,105 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(store.delivery('2000-01-02','one@example.com')['status'],'sent')
                 self.assertEqual(store.delivery('2000-01-02','one@example.com')['sent_at'],'old-stamp')
             finally: store.close()
+        backups = list((old.parent/'backups').glob('old-schema.pre-migration.*.db'))
+        self.assertEqual(len(backups), 1)
+        with closing(sqlite3.connect(backups[0])) as snapshot:
+            self.assertEqual(snapshot.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+            self.assertNotIn('report_origin', {r[1] for r in snapshot.execute('PRAGMA table_info(reports)')})
+            self.assertNotIn('sent_at', {r[1] for r in snapshot.execute('PRAGMA table_info(deliveries)')})
+            self.assertEqual(snapshot.execute('SELECT report,research FROM reports WHERE date=?',
+                ('2000-01-01',)).fetchone(), ('旧报告', json.dumps(sources)))
+            self.assertEqual(snapshot.execute('SELECT status FROM deliveries').fetchone()[0], 'sent')
         save_report(settings,'2000-01-01','补写报告')
         with patch('dailyNews.delivery.smtplib.SMTP') as smtp:
             smtp.return_value.send_message.return_value={}
             self.assertEqual(send_report(settings,'2000-01-01')['status'],'imported')
         smtp.assert_not_called()
+
+    def test_backup_includes_committed_wal_and_is_an_independent_snapshot(self):
+        self.store.conn.execute('PRAGMA journal_mode=WAL')
+        self.store.conn.execute('PRAGMA wal_autocheckpoint=0')
+        self.store.save_report(self.day, 'WAL 中的报告', {'sources': ['核查来源']})
+        with patch('dailyNews.http.requests.Session.post') as network, patch('dailyNews.delivery.smtplib.SMTP') as smtp:
+            target = self.store.backup()
+        network.assert_not_called(); smtp.assert_not_called()
+        self.store.save_report(self.day, '备份后的修改')
+        with closing(sqlite3.connect(target)) as snapshot:
+            self.assertEqual(snapshot.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+            row = snapshot.execute('SELECT report,research FROM reports WHERE date=?', (self.day,)).fetchone()
+            self.assertEqual(row[0], 'WAL 中的报告')
+            self.assertEqual(json.loads(row[1]), {'sources': ['核查来源']})
+
+    def test_failed_backup_removes_incomplete_snapshot(self):
+        with patch.object(self.store, 'conn') as connection:
+            connection.backup.side_effect = sqlite3.OperationalError('backup failed')
+            with self.assertRaisesRegex(sqlite3.OperationalError, 'backup failed'):
+                self.store.backup()
+        self.assertEqual(list((self.root/'backups').iterdir()), [])
+
+    def test_legacy_migration_requires_backup_before_any_schema_writes(self):
+        old = self.root/'legacy-migrate.db'
+        with closing(sqlite3.connect(old)) as conn, conn:
+            conn.execute('CREATE TABLE dailyNews(id,date,news,aiReply)')
+            conn.execute('INSERT INTO dailyNews VALUES (1,?,?,?)', ('2000-01-01', '旧新闻', '旧报告'))
+        with patch.object(Store, 'backup', side_effect=PermissionError('backup denied')):
+            with self.assertRaisesRegex(PermissionError, 'backup denied'):
+                Store(old)
+        with closing(sqlite3.connect(old)) as conn:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertEqual(tables, {'dailyNews'})
+        with closing(Store(old)) as store:
+            self.assertEqual(store.get('2000-01-01')['report'], '旧报告')
+        backups = list((self.root/'backups').glob('legacy-migrate.pre-migration.*.db'))
+        self.assertEqual(len(backups), 1)
+        with closing(sqlite3.connect(backups[0])) as snapshot:
+            self.assertEqual(snapshot.execute('SELECT aiReply FROM dailyNews').fetchone()[0], '旧报告')
+            self.assertIsNone(snapshot.execute("SELECT name FROM sqlite_master WHERE name='reports'").fetchone())
+
+    def test_send_reports_all_skipped_and_explicit_resend(self):
+        server = MagicMock(); server.send_message.return_value = {}
+        with patch('dailyNews.delivery.smtplib.SMTP', return_value=server):
+            first = send_report(self.settings, self.day)
+        self.assertEqual((first['accepted_count'], first['skipped_count']), (2, 0))
+        self.assertTrue(first['email_submitted'])
+        with patch('dailyNews.delivery.smtplib.SMTP') as smtp, patch('dailyNews.delivery.smtplib.SMTP_SSL') as ssl_smtp:
+            skipped = send_report(self.settings, self.day)
+        smtp.assert_not_called(); ssl_smtp.assert_not_called()
+        self.assertEqual(skipped['status'], 'skipped')
+        self.assertFalse(skipped['email_submitted'])
+        self.assertEqual((skipped['accepted_count'], skipped['skipped_count']), (0, 2))
+        self.assertEqual(skipped['deliveries'], first['deliveries'])
+        server.reset_mock()
+        with patch('dailyNews.delivery.smtplib.SMTP', return_value=server):
+            resent = send_report(self.settings, self.day, resend=True)
+        self.assertEqual(resent['status'], 'sent')
+        self.assertEqual((resent['accepted_count'], resent['skipped_count']), (2, 0))
+        self.assertTrue(resent['email_submitted'])
+        self.assertEqual(server.send_message.call_count, 2)
+
+    def test_send_reports_counts_for_partial_retry(self):
+        self.store.begin_delivery(self.day, 'one@example.com', '<id@example.com>')
+        self.store.finish_delivery(self.day, 'one@example.com', 'sent')
+        self.store.begin_delivery(self.day, 'two@example.com', '<retry@example.com>')
+        self.store.finish_delivery(self.day, 'two@example.com', 'failed')
+        server = MagicMock(); server.send_message.return_value = {}
+        with patch('dailyNews.delivery.smtplib.SMTP', return_value=server):
+            result = send_report(self.settings, self.day)
+        self.assertEqual(result['status'], 'sent')
+        self.assertTrue(result['email_submitted'])
+        self.assertEqual((result['accepted_count'], result['skipped_count']), (1, 1))
+        self.assertEqual(server.send_message.call_count, 1)
+        self.assertEqual([r['attempts'] for r in result['deliveries']], [1, 2])
+
+    def test_smtp_timeout_uses_config_for_starttls_and_ssl(self):
+        for security, factory in (('starttls', 'SMTP'), ('ssl', 'SMTP_SSL')):
+            with self.subTest(security=security):
+                settings = replace(self.settings, smtp_security=security, timeout=7)
+                server = MagicMock(); server.send_message.return_value = {}
+                with patch('dailyNews.delivery.smtplib.' + factory, return_value=server) as smtp:
+                    Delivery(settings, self.store).send(self.day, '报告', resend=True)
+                self.assertTrue(all(call.kwargs['timeout'] == 7 for call in smtp.call_args_list))
+                self.assertEqual(smtp.call_count, 2)
 
     def test_partial_delivery_only_retries_failed_recipient(self):
         good=MagicMock(); good.send_message.return_value={}
@@ -476,6 +570,31 @@ class WorkflowTests(unittest.TestCase):
         http=MagicMock(); http.post.return_value={'code':200,'data':{'date':'1999-01-01','news':['旧闻']}}
         with self.assertRaisesRegex(RuntimeError,'日期不匹配'):
             NewsClient(self.settings,http).fetch(self.day)
+
+    def test_news_numbering_cleanup_preserves_decimal_and_year_values(self):
+        examples = [
+            ('1、正常条目', '正常条目'), ('2. 正常第二项', '正常第二项'),
+            ('12. 第十二条', '第十二条'), ('3．全角编号', '全角编号'),
+            ('3.5%的GDP增速目标获得通过', '3.5%的GDP增速目标获得通过'),
+            ('1.5万亿元特别国债发行', '1.5万亿元特别国债发行'),
+            ('0.5个百分点', '0.5个百分点'), ('99.9%通过', '99.9%通过'),
+            ('2026. 年度报告', '2026. 年度报告'), ('2026、年度计划', '2026、年度计划'),
+            ('1.没有空格的标题', '1.没有空格的标题')]
+        http = MagicMock()
+        http.post.return_value = {'code': 200, 'data': {'date': self.day, 'news': [s for s, _ in examples]}}
+        news, metadata = NewsClient(self.settings, http).fetch(self.day)
+        expected = [s for _, s in examples]
+        self.assertEqual(news.splitlines(), expected)
+        self.assertEqual(metadata['items'], expected)
+
+    def test_settings_accept_string_and_path_config_and_database_paths(self):
+        env = self.root/'.env'
+        env.write_text('SQLITE_DB_PATH=from-env.db\n', encoding='utf-8')
+        with patch.dict(os.environ, {}, clear=True):
+            as_path = Settings.load(env, Path('override.db'))
+            as_string = Settings.load(str(env), 'override.db')
+        self.assertEqual(as_string, as_path)
+        self.assertEqual(as_string.db_path, self.root/'override.db')
 
     def test_same_database_cannot_run_concurrently(self):
         with run_lock(self.settings.db_path):

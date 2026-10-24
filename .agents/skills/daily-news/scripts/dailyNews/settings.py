@@ -29,8 +29,8 @@ class Settings:
     history_days: int = 30
 
     @classmethod
-    def load(cls, env_file: Path | None = None, db_path: Path | None = None):
-        env_file = (env_file or ROOT / '.env').expanduser().resolve()
+    def load(cls, env_file: str | Path | None = None, db_path: str | Path | None = None):
+        env_file = Path(env_file or ROOT / '.env').expanduser().resolve()
         values = {**dotenv_values(env_file), **os.environ}
         base = env_file.parent
 

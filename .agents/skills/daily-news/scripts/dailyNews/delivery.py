@@ -16,6 +16,7 @@ class Delivery:
 
     def send(self, day, report, *, resend=False):
         failures = []
+        accepted_count = skipped_count = 0
         html_report = None
         for recipient in self.settings.recipients:
             previous = self.store.delivery(day, recipient)
@@ -24,6 +25,7 @@ class Delivery:
                 continue
             if previous and previous['status'] == 'sent' and not resend:
                 log.info('已发送，跳过收件人：%s', recipient)
+                skipped_count += 1
                 continue
             if html_report is None:
                 html_report = render_report_html(report, title=f'每日早报 {day}')
@@ -44,9 +46,10 @@ class Delivery:
                 context = ssl.create_default_context()
                 if self.settings.smtp_security == 'ssl':
                     server = smtplib.SMTP_SSL(self.settings.smtp_host, self.settings.smtp_port,
-                                             timeout=30, context=context)
+                                             timeout=self.settings.timeout, context=context)
                 else:
-                    server = smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=30)
+                    server = smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port,
+                                          timeout=self.settings.timeout)
                     server.ehlo()
                     server.starttls(context=context)
                     server.ehlo()
@@ -57,6 +60,7 @@ class Delivery:
                     raise smtplib.SMTPRecipientsRefused(refused)
                 # Commit acceptance before QUIT. A QUIT disconnect does not undo delivery.
                 self.store.finish_delivery(day, recipient, 'sent')
+                accepted_count += 1
                 log.info('SMTP 已接受邮件：%s', recipient)
             except Exception as exc:
                 explicit_rejection = isinstance(exc, (smtplib.SMTPRecipientsRefused,
@@ -71,3 +75,5 @@ class Delivery:
                     except Exception: server.close()
         if failures:
             raise RuntimeError('邮件未全部确认成功：' + '; '.join(failures))
+        return {'accepted_count': accepted_count, 'skipped_count': skipped_count,
+                'email_submitted': accepted_count > 0}

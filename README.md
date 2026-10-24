@@ -17,7 +17,7 @@ data/                         本地运行数据，Git 忽略
   daily-news.db               新闻、报告和投递状态
   reports/                    报告及来源文件
   logs/                       运行日志
-  backups/                    原始数据库、配置和迁移来源备份
+  backups/                    数据库快照（迁移前自动创建，也可手动创建）
 main.py                       仓库快捷入口
 requirements.txt              引用 Skill 的依赖清单
 .env.example                  配置模板
@@ -38,7 +38,9 @@ requirements.txt              引用 Skill 的依赖清单
 
 修改报告正文但未提供 `--sources` 时会清空旧来源；正文不变且未提供来源时保留已有记录。提供 `--sources` 时以新记录为准，导出的来源文件与数据库保持一致。
 
-交接历史数据时另外携带 `data/daily-news.db`，库内已包含报告和来源；`data/reports/` 是可重新导出的文件。Git 忽略 `data/`，因此克隆仓库或只复制 Skill 目录不会携带历史数据库。目标环境自行提供 `.env` 并重建虚拟环境，原机器的 `.venv/` 和 `data/backups/` 无需复制。
+交接历史数据时另外携带 `data/daily-news.db`，库内已包含报告和来源；`data/reports/` 是可用 `export-reports` 重新导出的文件。Git 忽略 `data/`，因此克隆仓库或只复制 Skill 目录不会携带历史数据库。目标环境自行提供 `.env` 并重建虚拟环境；`data/backups/` 中的旧快照按回滚需要保留。
+
+旧表结构升级或首次自动导入本库的 `dailyNews` 表前，工具先在数据库旁的 `backups/` 目录创建快照；备份失败则停止迁移。`backup` 可随时手动创建数据库快照，JSON 返回实际路径。快照通过 [SQLite 备份 API](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup) 创建，包含已提交的 WAL 数据。新库及无需迁移的正常打开不会自动备份；没有定期或异地备份，也不自动复制 `.env`、外部历史导入来源或报告文件。
 
 ## Linux 使用
 
@@ -49,6 +51,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 # 首次部署创建配置文件，然后填写新闻和邮箱配置
 test -f .env || cp .env.example .env
+chmod 600 .env
 .venv/bin/python main.py check
 ```
 
@@ -65,9 +68,18 @@ test -f .env || cp .env.example .env
 .venv/bin/python main.py send --date YYYY-MM-DD --dry-run
 # 已有邮件任务授权时投递
 .venv/bin/python main.py send --date YYYY-MM-DD
+# 手动备份当前数据库；建议在历史导入前执行
+.venv/bin/python main.py backup
+# 旧库须含 dailyNews(id,date,news,aiReply) 表，来源只读
+.venv/bin/python main.py import-history /absolute/path/legacy.db
+# 重新导出全部非空报告及来源，也可指定包含首尾日期的范围
+.venv/bin/python main.py export-reports
+.venv/bin/python main.py export-reports --start-date YYYY-MM-DD --end-date YYYY-MM-DD
 ```
 
 直接运行 `main.py` 显示帮助。`status` 查看状态，`show --date YYYY-MM-DD` 读取报告。脚本不会自行分析或核查新闻。
+
+`import-history` 合并旧库同一日期的非空新闻和报告，保留本地生成、补写或已有投递记录的内容，不修改来源库、不导入旧投递状态。重复执行可安全合并；`imported_dates` 表示本次处理的日期数。`export-reports` 以数据库为准覆盖所选日期的 `.md` 和 `.sources.json`，跳过没有报告的日期，返回 `exported_count` 和 `dates`；不会发邮件或改写投递记录。
 
 新闻、报告、来源和投递状态持久化到 SQLite。`fetch` / `context` 输出在内存中处理，不另存上下文缓存；报告和来源的临时输入保存后立即清理，任务失败结束前也清理。`data/reports/` 仅保留工具导出的正式日期报告及来源文件。
 
@@ -77,11 +89,21 @@ test -f .env || cp .env.example .env
 
 ```bash
 /opt/daily-news/.venv/bin/python /opt/agent/skills/daily-news/scripts/news.py --env-file /opt/daily-news/.env check
+# 全局参数放在子命令之前
+/opt/daily-news/.venv/bin/python /opt/agent/skills/daily-news/scripts/news.py --env-file /opt/daily-news/.env --db data/archive.db --report-dir /opt/daily-news/exports export-reports
 ```
+
+| 全局参数 | 含义与路径基准 |
+| --- | --- |
+| `--env-file PATH` | 指定配置文件，优先于默认入口和 `DAILY_NEWS_HOME`；相对路径基于当前工作目录 |
+| `--db PATH` | 覆盖数据库位置；相对路径基于 `.env` 所在目录 |
+| `--report-dir PATH` | 覆盖导出目录；相对路径基于当前工作目录。配置项 `REPORT_DIR` 的相对路径仍基于 `.env` 所在目录 |
 
 `DAILY_NEWS_HOME` 可指定默认配置目录；未指定时，仓库快捷入口 `main.py` 使用仓库根目录，直接运行 Skill 的 `scripts/news.py` 使用 Skill 自身目录，包括安装在 `~/.agents/skills/daily-news/` 下的情况。`--env-file` 始终优先。
 
 JSON 输出在当前终端编码无法表示部分字符时使用 ASCII 转义，`json.loads` 可完整还原中文和 emoji；UTF-8 终端仍直接显示原文。`show` 的纯文本输出将无法编码的字符显示为反斜杠转义。详见 [Python JSON 编码说明](https://docs.python.org/3/library/json.html#json.dump)。
+
+Linux 的 `.env` 应仅供运行账户读写（`chmod 600`）；Windows 使用 [文件 ACL](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls) 限制访问，`chmod` 无法替代 Windows ACL。配置中的 `HTTP_TIMEOUT`（秒）同时用于新闻 HTTP 请求和 SMTP 连接。
 
 ## 投递与定时运行
 
@@ -90,6 +112,8 @@ JSON 输出在当前终端编码无法表示部分字符时使用 ASCII 转义�
 实现方式参考 [Python 官方邮件示例](https://docs.python.org/3/library/email.examples.html)和 [markdown-it-py 文档](https://markdown-it-py.readthedocs.io/en/latest/using.html)。客户端最终显示效果需实际试收确认。
 
 按日期和收件人去重；成功投递的收件人默认跳过，失败重试只处理未成功者。仅有 `failed` 投递记录时允许修改报告、来源或刷新新闻后重试；任何收件人已成功或仍为 `unknown` / `sending` 时锁定该日期内容。成功时间 `sent_at` 会保留，后续重发失败也不会解锁；旧库自动迁移现有 `sent` 记录的成功时间。导入历史报告默认不重发。
+
+`send` 成功返回本次的 `accepted_count`、`skipped_count` 和 `email_submitted`。全部跳过时为 `status: "skipped"`、`email_submitted: false`；本次至少一封获 SMTP 接受且没有失败时为 `status: "sent"`、`email_submitted: true`。部分跳过、部分发送的数量分别统计；`deliveries` 保留各收件人的持久化状态。`sent` 只说明 SMTP 已接受，收件箱是否实际收到仍需另行确认；任何失败或待确认状态继续以命令失败报告。
 
 SMTP 提交后断线或记账前崩溃会留下 `unknown` / `sending`。核对实际投递后，用 `resolve-delivery --date YYYY-MM-DD --recipient address --action sent|retry` 修正。`send --resend` 仅用于明确要求重发的情况。
 
